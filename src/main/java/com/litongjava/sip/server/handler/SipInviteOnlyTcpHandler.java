@@ -2,46 +2,59 @@ package com.litongjava.sip.server.handler;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import com.litongjava.aio.ByteBufferPacket;
 import com.litongjava.aio.Packet;
-import com.litongjava.sip.rtp.RtpPortAllocator;
-import com.litongjava.sip.rtp.RtpUdpServer;
-import com.litongjava.sip.server.SipDecoder;
+import com.litongjava.sip.model.CallSession;
+import com.litongjava.sip.model.SipMessage;
+import com.litongjava.sip.model.SipRequest;
+import com.litongjava.sip.model.SipResponse;
+import com.litongjava.sip.parser.SipMessageEncoder;
+import com.litongjava.sip.parser.SipMessageParser;
+import com.litongjava.sip.parser.SipTcpFrameDecoder;
+import com.litongjava.sip.rtp.RtpServerManager;
+import com.litongjava.sip.server.session.CallSessionManager;
 import com.litongjava.tio.core.ChannelContext;
 import com.litongjava.tio.core.Tio;
+import com.litongjava.tio.core.TioConfig;
 import com.litongjava.tio.server.intf.ServerAioHandler;
 
 public class SipInviteOnlyTcpHandler implements ServerAioHandler {
 
-  private String localIp;
-  private final RtpPortAllocator allocator = new RtpPortAllocator();
-
-  // 一个 SIP TCP 连接对应一个 RTP server（简单起见）
-  private final Map<String, RtpUdpServer> rtpByConn = new ConcurrentHashMap<>();
+  private final String localIp;
+  private final SipTcpFrameDecoder frameDecoder = new SipTcpFrameDecoder();
+  private final SipMessageParser messageParser = new SipMessageParser();
+  private final SipMessageEncoder messageEncoder = new SipMessageEncoder();
+  private final CallSessionManager sessionManager;
+  private final RtpServerManager rtpServerManager;
 
   public SipInviteOnlyTcpHandler(String localIp) {
+    this(localIp, new CallSessionManager(), new RtpServerManager(localIp));
+  }
+
+  public SipInviteOnlyTcpHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager) {
     this.localIp = localIp;
+    this.sessionManager = sessionManager;
+    this.rtpServerManager = rtpServerManager;
   }
 
   @Override
   public Packet decode(ByteBuffer buffer, int limit, int position, int readableLength, ChannelContext ctx)
       throws Exception {
-    if (readableLength <= 0) {
+    byte[] frame = frameDecoder.decode(buffer, readableLength, ctx);
+    if (frame == null) {
       return null;
     }
-    ByteBufferPacket p = SipDecoder.decode(buffer, readableLength, ctx);
-    return p;
+    return new ByteBufferPacket(ByteBuffer.wrap(frame));
   }
 
   @Override
-  public ByteBuffer encode(Packet packet, com.litongjava.tio.core.TioConfig tioConfig, ChannelContext channelContext) {
+  public ByteBuffer encode(Packet packet, TioConfig tioConfig, ChannelContext ctx) {
     ByteBufferPacket p = (ByteBufferPacket) packet;
     ByteBuffer bb = p.getByteBuffer();
-    if (bb.position() != 0)
+    if (bb.position() != 0) {
       bb.rewind();
+    }
     return bb;
   }
 
@@ -49,96 +62,213 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
   public void handler(Packet packet, ChannelContext ctx) throws Exception {
     ByteBufferPacket p = (ByteBufferPacket) packet;
     ByteBuffer bb = p.getByteBuffer();
-    byte[] msgBytes = new byte[bb.remaining()];
-    bb.get(msgBytes);
-    String sip = new String(msgBytes, StandardCharsets.US_ASCII);
 
-    if (sip.startsWith("INVITE ")) {
-      int rtpPort = allocator.allocate();
-      RtpUdpServer rtpServer = new RtpUdpServer(rtpPort);
-      rtpServer.start();
-      rtpByConn.put(ctx.getId(), rtpServer);
+    byte[] bytes = new byte[bb.remaining()];
+    bb.get(bytes);
 
-      String resp = build200OkForInvite(sip, localIp, rtpPort);
-      Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(resp.getBytes(StandardCharsets.US_ASCII))));
+    SipMessage msg = messageParser.parse(bytes);
+    if (!(msg instanceof SipRequest)) {
       return;
     }
 
-    // 最小链路：ACK 不处理也能测 RTP，但建议至少识别 ACK/ BYE
-    if (sip.startsWith("BYE ")) {
-      closeRtp(ctx);
-      String resp = buildSimpleResponse(sip, 200, "OK");
-      Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(resp.getBytes(StandardCharsets.US_ASCII))));
+    SipRequest req = (SipRequest) msg;
+    String method = req.getMethod();
+
+    if ("INVITE".equalsIgnoreCase(method)) {
+      handleInvite(req, ctx);
       return;
     }
 
-    // 其它先 200 OK（调试用）
-    String resp = buildSimpleResponse(sip, 200, "OK");
-    Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(resp.getBytes(StandardCharsets.US_ASCII))));
+    if ("ACK".equalsIgnoreCase(method)) {
+      handleAck(req);
+      return;
+    }
+
+    if ("BYE".equalsIgnoreCase(method)) {
+      handleBye(req, ctx);
+      return;
+    }
+
+    SipResponse resp = buildSimpleResponse(req, 200, "OK", null);
+    send(ctx, resp);
   }
 
-  private void closeRtp(ChannelContext ctx) {
-    RtpUdpServer s = rtpByConn.remove(ctx.getId());
-    if (s != null) {
-      s.stop();
-      allocator.release(s.port());
+  private void handleInvite(SipRequest req, ChannelContext ctx) throws Exception {
+    String callId = req.getHeader("Call-ID");
+    CallSession exist = sessionManager.getByCallId(callId);
+
+    if (exist != null && exist.getLast200Ok() != null) {
+      sendRaw(ctx, exist.getLast200Ok());
+      return;
+    }
+
+    String remoteIp = ctx.getClientNode() != null ? ctx.getClientNode().getIp() : null;
+    int remotePort = ctx.getClientNode() != null ? ctx.getClientNode().getPort() : 0;
+
+    String toTag = "java" + System.nanoTime();
+
+    CallSession session = new CallSession();
+    session.setCallId(callId);
+    session.setFromTag(parseTag(req.getHeader("From")));
+    session.setToTag(toTag);
+    session.setTransport("TCP");
+    session.setRemoteSipIp(remoteIp);
+    session.setRemoteSipPort(remotePort);
+    session.setCreatedTime(System.currentTimeMillis());
+    session.setUpdatedTime(System.currentTimeMillis());
+    session.setAckDeadline(System.currentTimeMillis() + 32000);
+
+    parseRemoteSdp(req, session);
+    rtpServerManager.allocateAndStart(session);
+
+    SipResponse resp = buildInvite200Ok(req, session);
+    byte[] encoded = messageEncoder.encodeResponse(resp);
+    String raw200 = new String(encoded, StandardCharsets.US_ASCII);
+
+    session.setLast200Ok(raw200);
+    sessionManager.createOrUpdate(session);
+
+    Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(encoded)));
+  }
+
+  private void handleAck(SipRequest req) {
+    String callId = req.getHeader("Call-ID");
+    sessionManager.markAckReceived(callId);
+  }
+
+  private void handleBye(SipRequest req, ChannelContext ctx) throws Exception {
+    String callId = req.getHeader("Call-ID");
+    CallSession session = sessionManager.getByCallId(callId);
+
+    SipResponse resp = buildSimpleResponse(req, 200, "OK", session != null ? session.getToTag() : null);
+    send(ctx, resp);
+
+    if (session != null) {
+      rtpServerManager.stopAndRelease(session);
+      sessionManager.terminate(callId);
     }
   }
 
-  // 只做示例：真实项目要正确解析 Via/From/To/Call-ID/CSeq/Contact 等并回填 tag
-  private String build200OkForInvite(String invite, String ip, int rtpPort) {
-    String via = header(invite, "Via");
-    String from = header(invite, "From");
-    String to = header(invite, "To");
-    String callId = header(invite, "Call-ID");
-    String cseq = header(invite, "CSeq");
+  private void send(ChannelContext ctx, SipResponse response) {
+    byte[] bytes = messageEncoder.encodeResponse(response);
+    Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(bytes)));
+  }
 
-    // To 必须带 tag（最小实现随便生成一个）
-    if (!to.toLowerCase().contains("tag=")) {
-      to = to + ";tag=java1234";
+  private void sendRaw(ChannelContext ctx, String text) {
+    byte[] bytes = text.getBytes(StandardCharsets.US_ASCII);
+    Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(bytes)));
+  }
+
+  private SipResponse buildInvite200Ok(SipRequest req, CallSession session) {
+    SipResponse resp = new SipResponse();
+    resp.setStatusCode(200);
+    resp.setReasonPhrase("OK");
+
+    copyIfPresent(req, resp, "Via");
+    copyIfPresent(req, resp, "From");
+
+    String to = req.getHeader("To");
+    if (to != null && !to.toLowerCase().contains("tag=")) {
+      to = to + ";tag=" + session.getToTag();
+    }
+    if (to != null) {
+      resp.addHeader("To", to);
     }
 
-    String sdp = "v=0\r\n" + "o=- 1 1 IN IP4 " + ip + "\r\n" + "s=JavaSip\r\n" + "c=IN IP4 " + ip + "\r\n" + "t=0 0\r\n"
-        + "m=audio " + rtpPort + " RTP/AVP 0\r\n" + "a=rtpmap:0 PCMU/8000\r\n" + "a=ptime:20\r\n" + "a=sendrecv\r\n";
+    copyIfPresent(req, resp, "Call-ID");
+    copyIfPresent(req, resp, "CSeq");
+    resp.addHeader("Contact", "<sip:java@" + localIp + ":5060>");
+    resp.addHeader("Content-Type", "application/sdp");
 
-    byte[] sdpBytes = sdp.getBytes(StandardCharsets.US_ASCII);
+    String sdp =
+        "v=0\r\n" +
+        "o=- 1 1 IN IP4 " + localIp + "\r\n" +
+        "s=JavaSip\r\n" +
+        "c=IN IP4 " + localIp + "\r\n" +
+        "t=0 0\r\n" +
+        "m=audio " + session.getLocalRtpPort() + " RTP/AVP 0\r\n" +
+        "a=rtpmap:0 PCMU/8000\r\n" +
+        "a=ptime:20\r\n" +
+        "a=sendrecv\r\n";
 
-    String resp = "SIP/2.0 200 OK\r\n" + (via.isEmpty() ? "" : "Via: " + via + "\r\n")
-        + (from.isEmpty() ? "" : "From: " + from + "\r\n") + (to.isEmpty() ? "" : "To: " + to + "\r\n")
-        + (callId.isEmpty() ? "" : "Call-ID: " + callId + "\r\n") + (cseq.isEmpty() ? "" : "CSeq: " + cseq + "\r\n")
-        + "Contact: <sip:java@" + ip + ":5060>\r\n" + "Content-Type: application/sdp\r\n" + "Content-Length: "
-        + sdpBytes.length + "\r\n" + "\r\n" + sdp;
-
+    resp.setBody(sdp.getBytes(StandardCharsets.US_ASCII));
     return resp;
   }
 
-  private String buildSimpleResponse(String req, int code, String reason) {
-    String via = header(req, "Via");
-    String from = header(req, "From");
-    String to = header(req, "To");
-    String callId = header(req, "Call-ID");
-    String cseq = header(req, "CSeq");
-    if (!to.toLowerCase().contains("tag=")) {
-      to = to + ";tag=java1234";
+  private SipResponse buildSimpleResponse(SipRequest req, int code, String reason, String toTag) {
+    SipResponse resp = new SipResponse();
+    resp.setStatusCode(code);
+    resp.setReasonPhrase(reason);
+
+    copyIfPresent(req, resp, "Via");
+    copyIfPresent(req, resp, "From");
+
+    String to = req.getHeader("To");
+    if (toTag != null && to != null && !to.toLowerCase().contains("tag=")) {
+      to = to + ";tag=" + toTag;
     }
-    return "SIP/2.0 " + code + " " + reason + "\r\n" + (via.isEmpty() ? "" : "Via: " + via + "\r\n")
-        + (from.isEmpty() ? "" : "From: " + from + "\r\n") + (to.isEmpty() ? "" : "To: " + to + "\r\n")
-        + (callId.isEmpty() ? "" : "Call-ID: " + callId + "\r\n") + (cseq.isEmpty() ? "" : "CSeq: " + cseq + "\r\n")
-        + "Content-Length: 0\r\n\r\n";
+    if (to != null) {
+      resp.addHeader("To", to);
+    }
+
+    copyIfPresent(req, resp, "Call-ID");
+    copyIfPresent(req, resp, "CSeq");
+
+    resp.setBody(new byte[0]);
+    return resp;
   }
 
-  // 只取第一条同名 header（最小实现）
-  private String header(String sip, String name) {
-    String[] lines = sip.split("\r\n");
+  private void copyIfPresent(SipRequest req, SipResponse resp, String headerName) {
+    for (String v : req.getHeaders(headerName)) {
+      resp.addHeader(headerName, v);
+    }
+  }
+
+  private String parseTag(String headerValue) {
+    if (headerValue == null) {
+      return null;
+    }
+
+    String lower = headerValue.toLowerCase();
+    int idx = lower.indexOf("tag=");
+    if (idx < 0) {
+      return null;
+    }
+
+    String sub = headerValue.substring(idx + 4);
+    int semi = sub.indexOf(';');
+    if (semi >= 0) {
+      sub = sub.substring(0, semi);
+    }
+    return sub.trim();
+  }
+
+  private void parseRemoteSdp(SipRequest req, CallSession session) {
+    byte[] body = req.getBody();
+    if (body == null || body.length == 0) {
+      return;
+    }
+
+    String sdp = new String(body, StandardCharsets.US_ASCII);
+    String[] lines = sdp.split("\r\n");
+
+    String currentMedia = null;
     for (String line : lines) {
-      int idx = line.indexOf(':');
-      if (idx <= 0)
-        continue;
-      String k = line.substring(0, idx).trim();
-      if (k.equalsIgnoreCase(name)) {
-        return line.substring(idx + 1).trim();
+      if (line.startsWith("c=")) {
+        String[] parts = line.split(" ");
+        if (parts.length >= 3) {
+          session.setRemoteRtpIp(parts[2].trim());
+        }
+      } else if (line.startsWith("m=")) {
+        currentMedia = line;
+        String[] parts = line.split(" ");
+        if (parts.length >= 2 && parts[0].startsWith("m=audio")) {
+          try {
+            session.setRemoteRtpPort(Integer.parseInt(parts[1]));
+          } catch (Exception ignore) {
+          }
+        }
       }
     }
-    return "";
   }
 }

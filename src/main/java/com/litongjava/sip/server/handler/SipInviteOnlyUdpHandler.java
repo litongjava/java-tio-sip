@@ -4,183 +4,253 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import com.litongjava.sip.model.CallSession;
-import com.litongjava.sip.rtp.RtpPortAllocator;
-import com.litongjava.sip.rtp.RtpUdpServer;
+import com.litongjava.sip.model.SipMessage;
+import com.litongjava.sip.model.SipRequest;
+import com.litongjava.sip.model.SipResponse;
+import com.litongjava.sip.parser.SipMessageEncoder;
+import com.litongjava.sip.parser.SipMessageParser;
+import com.litongjava.sip.rtp.RtpServerManager;
+import com.litongjava.sip.server.session.CallSessionManager;
 import com.litongjava.tio.core.Node;
 import com.litongjava.tio.core.udp.UdpPacket;
 import com.litongjava.tio.core.udp.intf.UdpHandler;
 
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
 public class SipInviteOnlyUdpHandler implements UdpHandler {
 
   private final String localIp;
-
-  private final RtpPortAllocator allocator = new RtpPortAllocator();
-
-  private final Map<String, CallSession> sessions = new ConcurrentHashMap<>();
+  private final SipMessageParser messageParser = new SipMessageParser();
+  private final SipMessageEncoder messageEncoder = new SipMessageEncoder();
+  private final CallSessionManager sessionManager;
+  private final RtpServerManager rtpServerManager;
 
   public SipInviteOnlyUdpHandler(String localIp) {
+    this(localIp, new CallSessionManager(), new RtpServerManager(localIp));
+  }
+
+  public SipInviteOnlyUdpHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager) {
     this.localIp = localIp;
+    this.sessionManager = sessionManager;
+    this.rtpServerManager = rtpServerManager;
   }
 
   @Override
   public void handler(UdpPacket udpPacket, DatagramSocket socket) {
-
-    Node remote = udpPacket.getRemote();
-
-    String sip = new String(udpPacket.getData(), StandardCharsets.US_ASCII);
-
-    log.info("SIP UDP recv from {}:{}\n{}", remote.getIp(), remote.getPort(), sip);
-
     try {
+      Node remote = udpPacket.getRemote();
+      byte[] data = udpPacket.getData();
 
-      if (sip.startsWith("INVITE ")) {
-        handleInvite(socket, remote, sip);
+      SipMessage msg = messageParser.parse(data);
+      if (!(msg instanceof SipRequest)) {
         return;
       }
 
-      if (sip.startsWith("ACK ")) {
+      SipRequest req = (SipRequest) msg;
+      String method = req.getMethod();
+
+      if ("INVITE".equalsIgnoreCase(method)) {
+        handleInvite(req, remote, socket);
         return;
       }
 
-      if (sip.startsWith("BYE ")) {
-        handleBye(socket, remote, sip);
+      if ("ACK".equalsIgnoreCase(method)) {
+        handleAck(req);
         return;
       }
 
-      send(socket, remote, buildSimpleResponse(sip, 200, "OK", null));
+      if ("BYE".equalsIgnoreCase(method)) {
+        handleBye(req, remote, socket);
+        return;
+      }
 
+      SipResponse resp = buildSimpleResponse(req, 200, "OK", null);
+      send(socket, remote, resp);
     } catch (Exception e) {
-      log.error("SIP handler error", e);
+      e.printStackTrace();
     }
   }
 
-  private void handleInvite(DatagramSocket socket, Node remote, String sip) throws Exception {
+  private void handleInvite(SipRequest req, Node remote, DatagramSocket socket) throws Exception {
+    String callId = req.getHeader("Call-ID");
+    CallSession exist = sessionManager.getByCallId(callId);
 
-    String callId = header(sip, "Call-ID");
-
-    CallSession exist = sessions.get(callId);
-
-    if (exist != null) {
-      log.info("INVITE retransmit {}", callId);
-      send(socket, remote, exist.last200Ok);
+    if (exist != null && exist.getLast200Ok() != null) {
+      sendRaw(socket, remote, exist.getLast200Ok());
       return;
     }
 
-    send(socket, remote, buildSimpleResponse(sip, 100, "Trying", null));
-
-    int rtpPort = allocator.allocate();
-
-    RtpUdpServer rtp = new RtpUdpServer(rtpPort);
-
-    rtp.start();
-
     String toTag = "java" + System.nanoTime();
 
-    String ok200 = build200OkForInvite(sip, localIp, rtpPort, toTag);
+    CallSession session = new CallSession();
+    session.setCallId(callId);
+    session.setFromTag(parseTag(req.getHeader("From")));
+    session.setToTag(toTag);
+    session.setTransport("UDP");
+    session.setRemoteSipIp(remote.getIp());
+    session.setRemoteSipPort(remote.getPort());
+    session.setCreatedTime(System.currentTimeMillis());
+    session.setUpdatedTime(System.currentTimeMillis());
+    session.setAckDeadline(System.currentTimeMillis() + 32000);
 
-    CallSession cs = new CallSession(callId, rtpPort, toTag, rtp);
+    parseRemoteSdp(req, session);
+    rtpServerManager.allocateAndStart(session);
 
-    cs.last200Ok = ok200;
+    SipResponse trying = buildSimpleResponse(req, 100, "Trying", null);
+    send(socket, remote, trying);
 
-    sessions.put(callId, cs);
+    SipResponse ok = buildInvite200Ok(req, session);
+    byte[] encoded = messageEncoder.encodeResponse(ok);
+    String raw200 = new String(encoded, StandardCharsets.US_ASCII);
 
-    send(socket, remote, ok200);
+    session.setLast200Ok(raw200);
+    sessionManager.createOrUpdate(session);
 
-    log.info("INVITE ok callId:{} rtpPort:{}", callId, rtpPort);
+    sendBytes(socket, remote, encoded);
   }
 
-  private void handleBye(DatagramSocket socket, Node remote, String sip) throws Exception {
+  private void handleAck(SipRequest req) {
+    String callId = req.getHeader("Call-ID");
+    sessionManager.markAckReceived(callId);
+  }
 
-    String callId = header(sip, "Call-ID");
+  private void handleBye(SipRequest req, Node remote, DatagramSocket socket) throws Exception {
+    String callId = req.getHeader("Call-ID");
+    CallSession session = sessionManager.getByCallId(callId);
 
-    CallSession cs = sessions.remove(callId);
+    SipResponse resp = buildSimpleResponse(req, 200, "OK", session != null ? session.getToTag() : null);
+    send(socket, remote, resp);
 
-    if (cs != null) {
-      cs.rtpServer.stop();
-      allocator.release(cs.rtpPort);
+    if (session != null) {
+      rtpServerManager.stopAndRelease(session);
+      sessionManager.terminate(callId);
     }
-
-    send(socket, remote, buildSimpleResponse(sip, 200, "OK", cs != null ? cs.toTag : null));
-
-    log.info("BYE callId:{} closed", callId);
   }
 
-  private void send(DatagramSocket socket, Node remote, String msg) throws Exception {
+  private void send(DatagramSocket socket, Node remote, SipResponse response) throws Exception {
+    byte[] bytes = messageEncoder.encodeResponse(response);
+    sendBytes(socket, remote, bytes);
+  }
 
-    byte[] bytes = msg.getBytes(StandardCharsets.US_ASCII);
+  private void sendRaw(DatagramSocket socket, Node remote, String text) throws Exception {
+    byte[] bytes = text.getBytes(StandardCharsets.US_ASCII);
+    sendBytes(socket, remote, bytes);
+  }
 
-    DatagramPacket packet = new DatagramPacket(bytes, bytes.length,
-        new InetSocketAddress(remote.getIp(), remote.getPort()));
-
+  private void sendBytes(DatagramSocket socket, Node remote, byte[] bytes) throws Exception {
+    DatagramPacket packet = new DatagramPacket(
+        bytes, bytes.length, new InetSocketAddress(remote.getIp(), remote.getPort()));
     socket.send(packet);
-
-    log.info("SIP UDP send\n{}", msg);
   }
 
-  private String build200OkForInvite(String invite, String ip, int rtpPort, String toTag) {
+  private SipResponse buildInvite200Ok(SipRequest req, CallSession session) {
+    SipResponse resp = new SipResponse();
+    resp.setStatusCode(200);
+    resp.setReasonPhrase("OK");
 
-    String via = header(invite, "Via");
-    String from = header(invite, "From");
-    String to = header(invite, "To");
-    String callId = header(invite, "Call-ID");
-    String cseq = header(invite, "CSeq");
+    copyIfPresent(req, resp, "Via");
+    copyIfPresent(req, resp, "From");
 
-    if (!to.toLowerCase().contains("tag=")) {
-      to = to + ";tag=" + toTag;
+    String to = req.getHeader("To");
+    if (to != null && !to.toLowerCase().contains("tag=")) {
+      to = to + ";tag=" + session.getToTag();
+    }
+    if (to != null) {
+      resp.addHeader("To", to);
     }
 
-    String sdp = "v=0\r\n" + "o=- 1 1 IN IP4 " + ip + "\r\n" + "s=JavaSip\r\n" + "c=IN IP4 " + ip + "\r\n" + "t=0 0\r\n"
-        + "m=audio " + rtpPort + " RTP/AVP 0\r\n" + "a=rtpmap:0 PCMU/8000\r\n" + "a=ptime:20\r\n" + "a=sendrecv\r\n";
+    copyIfPresent(req, resp, "Call-ID");
+    copyIfPresent(req, resp, "CSeq");
+    resp.addHeader("Contact", "<sip:java@" + localIp + ":5060>");
+    resp.addHeader("Content-Type", "application/sdp");
 
-    byte[] sdpBytes = sdp.getBytes(StandardCharsets.US_ASCII);
+    String sdp =
+        "v=0\r\n" +
+        "o=- 1 1 IN IP4 " + localIp + "\r\n" +
+        "s=JavaSip\r\n" +
+        "c=IN IP4 " + localIp + "\r\n" +
+        "t=0 0\r\n" +
+        "m=audio " + session.getLocalRtpPort() + " RTP/AVP 0\r\n" +
+        "a=rtpmap:0 PCMU/8000\r\n" +
+        "a=ptime:20\r\n" +
+        "a=sendrecv\r\n";
 
-    return "SIP/2.0 200 OK\r\n" + "Via: " + via + "\r\n" + "From: " + from + "\r\n" + "To: " + to + "\r\n" + "Call-ID: "
-        + callId + "\r\n" + "CSeq: " + cseq + "\r\n" + "Contact: <sip:java@" + ip + ":5060>\r\n"
-        + "Content-Type: application/sdp\r\n" + "Content-Length: " + sdpBytes.length + "\r\n" + "\r\n" + sdp;
+    resp.setBody(sdp.getBytes(StandardCharsets.US_ASCII));
+    return resp;
   }
 
-  private String buildSimpleResponse(String req, int code, String reason, String toTag) {
+  private SipResponse buildSimpleResponse(SipRequest req, int code, String reason, String toTag) {
+    SipResponse resp = new SipResponse();
+    resp.setStatusCode(code);
+    resp.setReasonPhrase(reason);
 
-    String via = header(req, "Via");
-    String from = header(req, "From");
-    String to = header(req, "To");
-    String callId = header(req, "Call-ID");
-    String cseq = header(req, "CSeq");
+    copyIfPresent(req, resp, "Via");
+    copyIfPresent(req, resp, "From");
 
-    if (toTag != null && !to.toLowerCase().contains("tag=")) {
+    String to = req.getHeader("To");
+    if (toTag != null && to != null && !to.toLowerCase().contains("tag=")) {
       to = to + ";tag=" + toTag;
     }
+    if (to != null) {
+      resp.addHeader("To", to);
+    }
 
-    return "SIP/2.0 " + code + " " + reason + "\r\n" + "Via: " + via + "\r\n" + "From: " + from + "\r\n" + "To: " + to
-        + "\r\n" + "Call-ID: " + callId + "\r\n" + "CSeq: " + cseq + "\r\n" + "Content-Length: 0\r\n\r\n";
+    copyIfPresent(req, resp, "Call-ID");
+    copyIfPresent(req, resp, "CSeq");
+
+    resp.setBody(new byte[0]);
+    return resp;
   }
 
-  private String header(String sip, String name) {
+  private void copyIfPresent(SipRequest req, SipResponse resp, String headerName) {
+    for (String v : req.getHeaders(headerName)) {
+      resp.addHeader(headerName, v);
+    }
+  }
 
-    String[] lines = sip.split("\r\n");
+  private String parseTag(String headerValue) {
+    if (headerValue == null) {
+      return null;
+    }
+
+    String lower = headerValue.toLowerCase();
+    int idx = lower.indexOf("tag=");
+    if (idx < 0) {
+      return null;
+    }
+
+    String sub = headerValue.substring(idx + 4);
+    int semi = sub.indexOf(';');
+    if (semi >= 0) {
+      sub = sub.substring(0, semi);
+    }
+    return sub.trim();
+  }
+
+  private void parseRemoteSdp(SipRequest req, CallSession session) {
+    byte[] body = req.getBody();
+    if (body == null || body.length == 0) {
+      return;
+    }
+
+    String sdp = new String(body, StandardCharsets.US_ASCII);
+    String[] lines = sdp.split("\r\n");
 
     for (String line : lines) {
-
-      int idx = line.indexOf(':');
-
-      if (idx <= 0) {
-        continue;
-      }
-
-      String k = line.substring(0, idx).trim();
-
-      if (k.equalsIgnoreCase(name)) {
-        return line.substring(idx + 1).trim();
+      if (line.startsWith("c=")) {
+        String[] parts = line.split(" ");
+        if (parts.length >= 3) {
+          session.setRemoteRtpIp(parts[2].trim());
+        }
+      } else if (line.startsWith("m=audio")) {
+        String[] parts = line.split(" ");
+        if (parts.length >= 2) {
+          try {
+            session.setRemoteRtpPort(Integer.parseInt(parts[1]));
+          } catch (Exception ignore) {
+          }
+        }
       }
     }
-
-    return "";
   }
 }
