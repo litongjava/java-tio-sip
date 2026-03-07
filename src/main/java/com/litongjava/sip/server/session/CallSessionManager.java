@@ -10,59 +10,41 @@ import com.litongjava.sip.model.CallSession;
 
 public class CallSessionManager {
 
-  /**
-   * 主索引：callId -> session
-   */
   private final ConcurrentMap<String, CallSession> sessionsByCallId = new ConcurrentHashMap<>();
-
-  /**
-   * 辅助索引：localRtpPort -> callId
-   * 用 callId 而不是 session，避免同一个 session 被多处索引直接引用时更难维护一致性
-   */
   private final ConcurrentMap<Integer, String> callIdByLocalRtpPort = new ConcurrentHashMap<>();
 
   public CallSession getByCallId(String callId) {
-    if (callId == null) {
-      return null;
-    }
-    return sessionsByCallId.get(callId);
+    return callId == null ? null : sessionsByCallId.get(callId);
   }
 
   public CallSession getByLocalRtpPort(int localRtpPort) {
     String callId = callIdByLocalRtpPort.get(localRtpPort);
-    if (callId == null) {
-      return null;
-    }
-    return sessionsByCallId.get(callId);
+    return callId == null ? null : sessionsByCallId.get(callId);
   }
 
-  /**
-   * 创建或更新 session
-   *
-   * 注意：
-   * 1. callId 不能为空
-   * 2. localRtpPort 如果会变化，需要同步更新辅助索引
-   */
   public CallSession createOrUpdate(CallSession session) {
     if (session == null || session.getCallId() == null) {
       throw new IllegalArgumentException("call session or callId is null");
     }
 
     final String callId = session.getCallId();
-    final int newLocalRtpPort = session.getLocalRtpPort();
+    final int newPort = session.getLocalRtpPort();
     final long now = System.currentTimeMillis();
     session.setUpdatedTime(now);
 
-    sessionsByCallId.compute(callId, (key, oldSession) -> {
+    sessionsByCallId.compute(callId, (k, oldSession) -> {
       if (oldSession != null) {
-        int oldLocalRtpPort = oldSession.getLocalRtpPort();
-        if (oldLocalRtpPort > 0 && oldLocalRtpPort != newLocalRtpPort) {
-          callIdByLocalRtpPort.remove(oldLocalRtpPort, callId);
+        int oldPort = oldSession.getLocalRtpPort();
+        if (oldPort > 0 && oldPort != newPort) {
+          callIdByLocalRtpPort.remove(oldPort, callId);
         }
       }
 
-      if (newLocalRtpPort > 0) {
-        callIdByLocalRtpPort.put(newLocalRtpPort, callId);
+      if (newPort > 0) {
+        String existingCallId = callIdByLocalRtpPort.put(newPort, callId);
+        if (existingCallId != null && !existingCallId.equals(callId)) {
+          // 如需严格防冲突，这里可以选择抛异常或记录日志
+        }
       }
 
       return session;
@@ -71,42 +53,91 @@ public class CallSessionManager {
     return session;
   }
 
-  public void markAckReceived(String callId) {
+  public boolean updateLocalRtpPort(String callId, int newLocalRtpPort) {
     if (callId == null) {
-      return;
+      return false;
+    }
+
+    return sessionsByCallId.computeIfPresent(callId, (k, session) -> {
+      int oldPort = session.getLocalRtpPort();
+      if (oldPort > 0 && oldPort != newLocalRtpPort) {
+        callIdByLocalRtpPort.remove(oldPort, callId);
+      }
+
+      session.setLocalRtpPort(newLocalRtpPort);
+      session.setUpdatedTime(System.currentTimeMillis());
+
+      if (newLocalRtpPort > 0) {
+        callIdByLocalRtpPort.put(newLocalRtpPort, callId);
+      }
+
+      return session;
+    }) != null;
+  }
+
+  public boolean markAckReceived(String callId) {
+    if (callId == null) {
+      return false;
     }
 
     CallSession session = sessionsByCallId.get(callId);
-    if (session != null) {
-      session.setAckReceived(true);
-      session.setUpdatedTime(System.currentTimeMillis());
+    if (session == null) {
+      return false;
     }
+
+    session.setAckReceived(true);
+    session.setUpdatedTime(System.currentTimeMillis());
+    return true;
   }
 
-  public void markTerminated(String callId) {
+  public boolean markTerminated(String callId) {
     if (callId == null) {
-      return;
+      return false;
     }
 
     CallSession session = sessionsByCallId.get(callId);
-    if (session != null) {
-      session.setTerminated(true);
-      session.setUpdatedTime(System.currentTimeMillis());
+    if (session == null) {
+      return false;
     }
+
+    session.setTerminated(true);
+    session.setUpdatedTime(System.currentTimeMillis());
+    return true;
   }
 
-  public void remove(String callId) {
+  public boolean remove(String callId) {
     if (callId == null) {
-      return;
+      return false;
     }
 
     CallSession removed = sessionsByCallId.remove(callId);
-    if (removed != null) {
-      int localRtpPort = removed.getLocalRtpPort();
-      if (localRtpPort > 0) {
-        callIdByLocalRtpPort.remove(localRtpPort, callId);
+    if (removed == null) {
+      return false;
+    }
+
+    int localRtpPort = removed.getLocalRtpPort();
+    if (localRtpPort > 0) {
+      callIdByLocalRtpPort.remove(localRtpPort, callId);
+    }
+    return true;
+  }
+
+  public int removeExpired(long expireBefore) {
+    int removedCount = 0;
+    for (Map.Entry<String, CallSession> entry : sessionsByCallId.entrySet()) {
+      String callId = entry.getKey();
+      CallSession session = entry.getValue();
+      if (session != null && session.getUpdatedTime() < expireBefore) {
+        if (sessionsByCallId.remove(callId, session)) {
+          int localRtpPort = session.getLocalRtpPort();
+          if (localRtpPort > 0) {
+            callIdByLocalRtpPort.remove(localRtpPort, callId);
+          }
+          removedCount++;
+        }
       }
     }
+    return removedCount;
   }
 
   public Map<String, CallSession> snapshot() {
