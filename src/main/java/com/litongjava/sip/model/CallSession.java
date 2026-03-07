@@ -1,6 +1,7 @@
 package com.litongjava.sip.model;
 
 import com.litongjava.sip.rtp.RtpUdpServer;
+import com.litongjava.sip.sdp.CodecSpec;
 
 public class CallSession {
 
@@ -27,6 +28,12 @@ public class CallSession {
   private String last200Ok;
 
   private RtpUdpServer rtpServer;
+
+  // 第二阶段新增
+  private CodecSpec selectedCodec;
+  private boolean telephoneEventSupported;
+  private int remoteTelephoneEventPayloadType = -1;
+  private int ptime = 20;
 
   public String getCallId() {
     return callId;
@@ -154,5 +161,37 @@ public class CallSession {
 
   public void setRtpServer(RtpUdpServer rtpServer) {
     this.rtpServer = rtpServer;
+  }
+
+  public CodecSpec getSelectedCodec() {
+    return selectedCodec;
+  }
+
+  public void setSelectedCodec(CodecSpec selectedCodec) {
+    this.selectedCodec = selectedCodec;
+  }
+
+  public boolean isTelephoneEventSupported() {
+    return telephoneEventSupported;
+  }
+
+  public void setTelephoneEventSupported(boolean telephoneEventSupported) {
+    this.telephoneEventSupported = telephoneEventSupported;
+  }
+
+  public int getRemoteTelephoneEventPayloadType() {
+    return remoteTelephoneEventPayloadType;
+  }
+
+  public void setRemoteTelephoneEventPayloadType(int remoteTelephoneEventPayloadType) {
+    this.remoteTelephoneEventPayloadType = remoteTelephoneEventPayloadType;
+  }
+
+  public int getPtime() {
+    return ptime;
+  }
+
+  public void setPtime(int ptime) {
+    this.ptime = ptime;
   }
 }

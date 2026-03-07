@@ -33,14 +33,11 @@ public class CallSessionManager {
     }
   }
 
-  public void terminate(String callId) {
-    CallSession session = sessions.remove(callId);
+  public void markTerminated(String callId) {
+    CallSession session = sessions.get(callId);
     if (session != null) {
       session.setTerminated(true);
       session.setUpdatedTime(System.currentTimeMillis());
-      if (session.getRtpServer() != null) {
-        session.getRtpServer().stop();
-      }
     }
   }
 

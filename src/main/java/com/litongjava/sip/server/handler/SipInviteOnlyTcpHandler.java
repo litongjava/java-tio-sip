@@ -13,6 +13,9 @@ import com.litongjava.sip.parser.SipMessageEncoder;
 import com.litongjava.sip.parser.SipMessageParser;
 import com.litongjava.sip.parser.SipTcpFrameDecoder;
 import com.litongjava.sip.rtp.RtpServerManager;
+import com.litongjava.sip.sdp.SdpAnswerBuilder;
+import com.litongjava.sip.sdp.SdpNegotiationResult;
+import com.litongjava.sip.sdp.SdpParser;
 import com.litongjava.sip.server.session.CallSessionManager;
 import com.litongjava.tio.core.ChannelContext;
 import com.litongjava.tio.core.Tio;
@@ -27,6 +30,9 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
   private final SipMessageEncoder messageEncoder = new SipMessageEncoder();
   private final CallSessionManager sessionManager;
   private final RtpServerManager rtpServerManager;
+
+  private final SdpParser sdpParser = new SdpParser();
+  private final SdpAnswerBuilder sdpAnswerBuilder = new SdpAnswerBuilder();
 
   public SipInviteOnlyTcpHandler(String localIp) {
     this(localIp, new CallSessionManager(), new RtpServerManager(localIp));
@@ -102,6 +108,13 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
       return;
     }
 
+    SdpNegotiationResult negotiation = sdpParser.negotiate(req.getBody());
+    if (!negotiation.isSuccess()) {
+      SipResponse fail = buildSimpleResponse(req, 488, "Not Acceptable Here", null);
+      send(ctx, fail);
+      return;
+    }
+
     String remoteIp = ctx.getClientNode() != null ? ctx.getClientNode().getIp() : null;
     int remotePort = ctx.getClientNode() != null ? ctx.getClientNode().getPort() : 0;
 
@@ -118,10 +131,16 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
     session.setUpdatedTime(System.currentTimeMillis());
     session.setAckDeadline(System.currentTimeMillis() + 32000);
 
-    parseRemoteSdp(req, session);
+    session.setRemoteRtpIp(negotiation.getRemoteRtpIp());
+    session.setRemoteRtpPort(negotiation.getRemoteRtpPort());
+    session.setSelectedCodec(negotiation.getSelectedCodec());
+    session.setTelephoneEventSupported(negotiation.isTelephoneEventSupported());
+    session.setRemoteTelephoneEventPayloadType(negotiation.getRemoteTelephoneEventPayloadType());
+    session.setPtime(negotiation.getPtime());
+
     rtpServerManager.allocateAndStart(session);
 
-    SipResponse resp = buildInvite200Ok(req, session);
+    SipResponse resp = buildInvite200Ok(req, session, negotiation);
     byte[] encoded = messageEncoder.encodeResponse(resp);
     String raw200 = new String(encoded, StandardCharsets.US_ASCII);
 
@@ -145,7 +164,7 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
 
     if (session != null) {
       rtpServerManager.stopAndRelease(session);
-      sessionManager.terminate(callId);
+      sessionManager.markTerminated(callId);
     }
   }
 
@@ -159,7 +178,7 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
     Tio.send(ctx, new ByteBufferPacket(ByteBuffer.wrap(bytes)));
   }
 
-  private SipResponse buildInvite200Ok(SipRequest req, CallSession session) {
+  private SipResponse buildInvite200Ok(SipRequest req, CallSession session, SdpNegotiationResult negotiation) {
     SipResponse resp = new SipResponse();
     resp.setStatusCode(200);
     resp.setReasonPhrase("OK");
@@ -180,17 +199,7 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
     resp.addHeader("Contact", "<sip:java@" + localIp + ":5060>");
     resp.addHeader("Content-Type", "application/sdp");
 
-    String sdp =
-        "v=0\r\n" +
-        "o=- 1 1 IN IP4 " + localIp + "\r\n" +
-        "s=JavaSip\r\n" +
-        "c=IN IP4 " + localIp + "\r\n" +
-        "t=0 0\r\n" +
-        "m=audio " + session.getLocalRtpPort() + " RTP/AVP 0\r\n" +
-        "a=rtpmap:0 PCMU/8000\r\n" +
-        "a=ptime:20\r\n" +
-        "a=sendrecv\r\n";
-
+    String sdp = sdpAnswerBuilder.buildAnswer(localIp, session.getLocalRtpPort(), negotiation);
     resp.setBody(sdp.getBytes(StandardCharsets.US_ASCII));
     return resp;
   }
@@ -213,7 +222,6 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
 
     copyIfPresent(req, resp, "Call-ID");
     copyIfPresent(req, resp, "CSeq");
-
     resp.setBody(new byte[0]);
     return resp;
   }
@@ -241,34 +249,5 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
       sub = sub.substring(0, semi);
     }
     return sub.trim();
-  }
-
-  private void parseRemoteSdp(SipRequest req, CallSession session) {
-    byte[] body = req.getBody();
-    if (body == null || body.length == 0) {
-      return;
-    }
-
-    String sdp = new String(body, StandardCharsets.US_ASCII);
-    String[] lines = sdp.split("\r\n");
-
-    String currentMedia = null;
-    for (String line : lines) {
-      if (line.startsWith("c=")) {
-        String[] parts = line.split(" ");
-        if (parts.length >= 3) {
-          session.setRemoteRtpIp(parts[2].trim());
-        }
-      } else if (line.startsWith("m=")) {
-        currentMedia = line;
-        String[] parts = line.split(" ");
-        if (parts.length >= 2 && parts[0].startsWith("m=audio")) {
-          try {
-            session.setRemoteRtpPort(Integer.parseInt(parts[1]));
-          } catch (Exception ignore) {
-          }
-        }
-      }
-    }
   }
 }

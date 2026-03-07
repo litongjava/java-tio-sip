@@ -11,12 +11,8 @@ public class SipMessageEncoder {
   public byte[] encodeResponse(SipResponse response) {
     StringBuilder sb = new StringBuilder();
 
-    sb.append(response.getVersion())
-      .append(' ')
-      .append(response.getStatusCode())
-      .append(' ')
-      .append(response.getReasonPhrase())
-      .append("\r\n");
+    sb.append(response.getVersion()).append(' ').append(response.getStatusCode()).append(' ')
+        .append(response.getReasonPhrase()).append("\r\n");
 
     for (Map.Entry<String, List<String>> e : response.getHeaders().entrySet()) {
       String name = e.getKey();
