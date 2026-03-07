@@ -16,6 +16,15 @@ public class CallSessionManager {
     return sessions.get(callId);
   }
 
+  public CallSession getByLocalRtpPort(int localRtpPort) {
+    for (CallSession session : sessions.values()) {
+      if (session != null && session.getLocalRtpPort() == localRtpPort) {
+        return session;
+      }
+    }
+    return null;
+  }
+
   public CallSession createOrUpdate(CallSession session) {
     if (session == null || session.getCallId() == null) {
       throw new IllegalArgumentException("call session or callId is null");

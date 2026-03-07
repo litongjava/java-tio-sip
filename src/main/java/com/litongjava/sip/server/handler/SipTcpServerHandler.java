@@ -13,6 +13,7 @@ import com.litongjava.sip.parser.SipMessageEncoder;
 import com.litongjava.sip.parser.SipMessageParser;
 import com.litongjava.sip.parser.SipTcpFrameDecoder;
 import com.litongjava.sip.rtp.RtpServerManager;
+import com.litongjava.sip.rtp.media.MediaProcessor;
 import com.litongjava.sip.sdp.SdpAnswerBuilder;
 import com.litongjava.sip.sdp.SdpNegotiationResult;
 import com.litongjava.sip.sdp.SdpParser;
@@ -22,7 +23,7 @@ import com.litongjava.tio.core.Tio;
 import com.litongjava.tio.core.TioConfig;
 import com.litongjava.tio.server.intf.ServerAioHandler;
 
-public class SipInviteOnlyTcpHandler implements ServerAioHandler {
+public class SipTcpServerHandler implements ServerAioHandler {
 
   private final String localIp;
   private final SipTcpFrameDecoder frameDecoder = new SipTcpFrameDecoder();
@@ -30,18 +31,17 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
   private final SipMessageEncoder messageEncoder = new SipMessageEncoder();
   private final CallSessionManager sessionManager;
   private final RtpServerManager rtpServerManager;
+  private final MediaProcessor mediaProcessor;
 
   private final SdpParser sdpParser = new SdpParser();
   private final SdpAnswerBuilder sdpAnswerBuilder = new SdpAnswerBuilder();
 
-  public SipInviteOnlyTcpHandler(String localIp) {
-    this(localIp, new CallSessionManager(), new RtpServerManager(localIp));
-  }
-
-  public SipInviteOnlyTcpHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager) {
+  public SipTcpServerHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager,
+      MediaProcessor mediaProcessor) {
     this.localIp = localIp;
     this.sessionManager = sessionManager;
     this.rtpServerManager = rtpServerManager;
+    this.mediaProcessor = mediaProcessor;
   }
 
   @Override
@@ -138,7 +138,7 @@ public class SipInviteOnlyTcpHandler implements ServerAioHandler {
     session.setRemoteTelephoneEventPayloadType(negotiation.getRemoteTelephoneEventPayloadType());
     session.setPtime(negotiation.getPtime());
 
-    rtpServerManager.allocateAndStart(session);
+    rtpServerManager.allocateAndStart(session, mediaProcessor);
 
     SipResponse resp = buildInvite200Ok(req, session, negotiation);
     byte[] encoded = messageEncoder.encodeResponse(resp);

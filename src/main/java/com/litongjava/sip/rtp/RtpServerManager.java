@@ -1,25 +1,29 @@
 package com.litongjava.sip.rtp;
 
 import com.litongjava.sip.model.CallSession;
+import com.litongjava.sip.rtp.media.MediaProcessor;
+import com.litongjava.sip.server.session.CallSessionManager;
 
 public class RtpServerManager {
 
   private final String localIp;
   private final RtpPortAllocator allocator;
+  private final CallSessionManager sessionManager;
 
-  public RtpServerManager(String localIp) {
-    this(localIp, new RtpPortAllocator());
+  public RtpServerManager(String localIp, CallSessionManager sessionManager) {
+    this(localIp, new RtpPortAllocator(), sessionManager);
   }
 
-  public RtpServerManager(String localIp, RtpPortAllocator allocator) {
+  public RtpServerManager(String localIp, RtpPortAllocator allocator, CallSessionManager sessionManager) {
     this.localIp = localIp;
     this.allocator = allocator;
+    this.sessionManager = sessionManager;
   }
 
-  public CallSession allocateAndStart(CallSession session) throws Exception {
+  public CallSession allocateAndStart(CallSession session, MediaProcessor mediaProcessor) throws Exception {
     int rtpPort = allocator.allocate();
-    RtpUdpServer rtpServer = new RtpUdpServer(rtpPort);
-    rtpServer.start();
+    RtpUdpServer rtpServer = new RtpUdpServer(rtpPort, sessionManager);
+    rtpServer.start(mediaProcessor);
 
     session.setLocalRtpPort(rtpPort);
     session.setRtpServer(rtpServer);

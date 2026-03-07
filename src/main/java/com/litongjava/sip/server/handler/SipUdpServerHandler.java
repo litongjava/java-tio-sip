@@ -12,6 +12,7 @@ import com.litongjava.sip.model.SipResponse;
 import com.litongjava.sip.parser.SipMessageEncoder;
 import com.litongjava.sip.parser.SipMessageParser;
 import com.litongjava.sip.rtp.RtpServerManager;
+import com.litongjava.sip.rtp.media.MediaProcessor;
 import com.litongjava.sip.sdp.SdpAnswerBuilder;
 import com.litongjava.sip.sdp.SdpNegotiationResult;
 import com.litongjava.sip.sdp.SdpParser;
@@ -20,25 +21,25 @@ import com.litongjava.tio.core.Node;
 import com.litongjava.tio.core.udp.UdpPacket;
 import com.litongjava.tio.core.udp.intf.UdpHandler;
 
-public class SipInviteOnlyUdpHandler implements UdpHandler {
+public class SipUdpServerHandler implements UdpHandler {
 
   private final String localIp;
   private final SipMessageParser messageParser = new SipMessageParser();
   private final SipMessageEncoder messageEncoder = new SipMessageEncoder();
-  private final CallSessionManager sessionManager;
-  private final RtpServerManager rtpServerManager;
 
   private final SdpParser sdpParser = new SdpParser();
   private final SdpAnswerBuilder sdpAnswerBuilder = new SdpAnswerBuilder();
 
-  public SipInviteOnlyUdpHandler(String localIp) {
-    this(localIp, new CallSessionManager(), new RtpServerManager(localIp));
-  }
+  private final CallSessionManager sessionManager;
+  private final RtpServerManager rtpServerManager;
+  private final MediaProcessor mediaProcessor;
 
-  public SipInviteOnlyUdpHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager) {
+  public SipUdpServerHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager,
+      MediaProcessor mediaProcessor) {
     this.localIp = localIp;
     this.sessionManager = sessionManager;
     this.rtpServerManager = rtpServerManager;
+    this.mediaProcessor = mediaProcessor;
   }
 
   @Override
@@ -113,7 +114,7 @@ public class SipInviteOnlyUdpHandler implements UdpHandler {
     session.setRemoteTelephoneEventPayloadType(negotiation.getRemoteTelephoneEventPayloadType());
     session.setPtime(negotiation.getPtime());
 
-    rtpServerManager.allocateAndStart(session);
+    rtpServerManager.allocateAndStart(session, mediaProcessor);
 
     SipResponse trying = buildSimpleResponse(req, 100, "Trying", null);
     send(socket, remote, trying);

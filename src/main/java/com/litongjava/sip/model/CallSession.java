@@ -9,7 +9,7 @@ public class CallSession {
   private String fromTag;
   private String toTag;
 
-  private String transport; // TCP / UDP
+  private String transport;
 
   private String remoteSipIp;
   private int remoteSipPort;
@@ -26,14 +26,65 @@ public class CallSession {
   private boolean terminated;
 
   private String last200Ok;
-
   private RtpUdpServer rtpServer;
 
-  // 第二阶段新增
   private CodecSpec selectedCodec;
   private boolean telephoneEventSupported;
   private int remoteTelephoneEventPayloadType = -1;
   private int ptime = 20;
+
+  // 第三阶段新增
+  private long localSsrc = System.nanoTime() & 0xFFFFFFFFL;
+  private int sendSequence = 0;
+  private long sendTimestamp = 0;
+  private boolean rtpInitialized = false;
+
+  public synchronized int nextSendSequence() {
+    sendSequence = (sendSequence + 1) & 0xFFFF;
+    return sendSequence;
+  }
+
+  public synchronized long nextSendTimestamp(int sampleCount) {
+    if (!rtpInitialized) {
+      rtpInitialized = true;
+      sendTimestamp = sampleCount;
+      return sendTimestamp;
+    }
+    sendTimestamp = (sendTimestamp + sampleCount) & 0xFFFFFFFFL;
+    return sendTimestamp;
+  }
+
+  public long getLocalSsrc() {
+    return localSsrc;
+  }
+
+  public void setLocalSsrc(long localSsrc) {
+    this.localSsrc = localSsrc;
+  }
+
+  public int getSendSequence() {
+    return sendSequence;
+  }
+
+  public void setSendSequence(int sendSequence) {
+    this.sendSequence = sendSequence;
+  }
+
+  public long getSendTimestamp() {
+    return sendTimestamp;
+  }
+
+  public void setSendTimestamp(long sendTimestamp) {
+    this.sendTimestamp = sendTimestamp;
+  }
+
+  public boolean isRtpInitialized() {
+    return rtpInitialized;
+  }
+
+  public void setRtpInitialized(boolean rtpInitialized) {
+    this.rtpInitialized = rtpInitialized;
+  }
 
   public String getCallId() {
     return callId;
