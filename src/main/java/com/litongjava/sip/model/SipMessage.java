@@ -34,7 +34,7 @@ public abstract class SipMessage {
         return e.getValue();
       }
     }
-    return List.of();
+    return new ArrayList<>();
   }
 
   public byte[] getBody() {
