@@ -83,8 +83,6 @@ public class SdpParser {
       }
 
       if (line.startsWith("a=rtpmap:")) {
-        // a=rtpmap:0 PCMU/8000
-        // a=rtpmap:101 telephone-event/8000
         try {
           int colon = line.indexOf(':');
           int space = line.indexOf(' ');
@@ -142,12 +140,10 @@ public class SdpParser {
     result.setTelephoneEventSupported(telephoneEventSupported);
     result.setRemoteTelephoneEventPayloadType(telephoneEventPt);
     result.setPtime(ptime);
-
     return result;
   }
 
   private CodecSpec chooseCodec(List<Integer> offeredPayloadTypes, Map<Integer, CodecSpec> offeredCodecMap) {
-    // 优先顺序按本地支持列表
     for (CodecSpec local : localSupportedCodecs) {
       for (Integer pt : offeredPayloadTypes) {
         CodecSpec offered = offeredCodecMap.get(pt);
@@ -157,12 +153,14 @@ public class SdpParser {
             return new CodecSpec(pt, offered.getCodecName(), offered.getClockRate());
           }
         } else {
-          // 静态 payload type 可能没有 rtpmap，也要能识别
           if (pt == 0 && local.isStaticPcmu()) {
             return new CodecSpec(0, "PCMU", 8000);
           }
           if (pt == 8 && local.isStaticPcma()) {
             return new CodecSpec(8, "PCMA", 8000);
+          }
+          if (pt == 9 && "G722".equalsIgnoreCase(local.getCodecName()) && local.getClockRate() == 8000) {
+            return new CodecSpec(9, "G722", 8000);
           }
         }
       }
@@ -172,6 +170,7 @@ public class SdpParser {
 
   public static List<CodecSpec> defaultSupportedCodecs() {
     List<CodecSpec> codecs = new ArrayList<>();
+//    codecs.add(new CodecSpec(9, "G722", 8000));
     codecs.add(new CodecSpec(0, "PCMU", 8000));
     codecs.add(new CodecSpec(8, "PCMA", 8000));
     return codecs;

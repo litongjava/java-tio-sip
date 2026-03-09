@@ -3,10 +3,6 @@ package com.litongjava.sip.rtp.codec;
 import java.util.Arrays;
 import java.util.Objects;
 
-/**
- * 简单线性插值重采样
- * 适合当前语音链路对接，依赖少、易落地
- */
 public final class AudioResampler {
 
   private AudioResampler() {
@@ -14,6 +10,7 @@ public final class AudioResampler {
 
   public static short[] resample(short[] input, int srcRate, int dstRate) {
     Objects.requireNonNull(input, "input");
+
     if (input.length == 0) {
       return new short[0];
     }
@@ -40,13 +37,13 @@ public final class AudioResampler {
     return output;
   }
 
-  private static short clampToShort(double v) {
-    if (v > Short.MAX_VALUE) {
+  private static short clampToShort(double value) {
+    if (value > Short.MAX_VALUE) {
       return Short.MAX_VALUE;
     }
-    if (v < Short.MIN_VALUE) {
+    if (value < Short.MIN_VALUE) {
       return Short.MIN_VALUE;
     }
-    return (short) Math.round(v);
+    return (short) Math.round(value);
   }
 }

@@ -6,6 +6,9 @@ import java.net.InetSocketAddress;
 
 import com.litongjava.sip.model.CallSession;
 import com.litongjava.sip.rtp.codec.AudioCodec;
+import com.litongjava.sip.rtp.codec.AudioResampler;
+import com.litongjava.sip.rtp.codec.G722Codec;
+import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 import com.litongjava.sip.rtp.codec.PcmaCodec;
 import com.litongjava.sip.rtp.codec.PcmuCodec;
 import com.litongjava.sip.rtp.media.AudioFrame;
@@ -33,6 +36,7 @@ public class RtpUdpHandler implements UdpHandler {
 
   private final AudioCodec pcmuCodec = new PcmuCodec();
   private final AudioCodec pcmaCodec = new PcmaCodec();
+  private final AudioCodec g722Codec = new G722Codec();
 
   public RtpUdpHandler(int localPort, CallSessionManager sessionManager) {
     this(localPort, sessionManager, new EchoMediaProcessor());
@@ -52,14 +56,6 @@ public class RtpUdpHandler implements UdpHandler {
         return;
       }
 
-//      log.info(
-//          "RTP packet received, callId={}, localPort={}, selectedCodec={}, selectedPt={}, selectedSampleRate={}, remoteRtp={}:{}",
-//          session.getCallId(), localPort,
-//          session.getSelectedCodec() != null ? session.getSelectedCodec().getCodecName() : null,
-//          session.getSelectedCodec() != null ? session.getSelectedCodec().getPayloadType() : -1,
-//          session.getSelectedCodec() != null ? session.getSelectedCodec().getClockRate() : -1, session.getRemoteRtpIp(),
-//          session.getRemoteRtpPort());
-
       Node remote = udpPacket.getRemote();
       byte[] data = udpPacket.getData();
       if (data == null || data.length < 12) {
@@ -68,11 +64,6 @@ public class RtpUdpHandler implements UdpHandler {
 
       RtpPacket in = rtpPacketParser.parse(data);
 
-//      log.info("RTP parsed, callId={}, inPt={}, seq={}, ts={}, ssrc={}, payloadBytes={}", session.getCallId(),
-//          in.getPayloadType(), in.getSequenceNumber(), in.getTimestamp(), in.getSsrc(),
-//          in.getPayload() != null ? in.getPayload().length : 0);
-
-      // 更新远端 RTP 地址，适配首次学习或端口漂移
       if (session.getRemoteRtpIp() == null || session.getRemoteRtpIp().isEmpty()) {
         session.setRemoteRtpIp(remote.getIp());
       }
@@ -80,7 +71,6 @@ public class RtpUdpHandler implements UdpHandler {
         session.setRemoteRtpPort(remote.getPort());
       }
 
-      // DTMF event 先忽略，不做 echo
       if (session.isTelephoneEventSupported() && in.getPayloadType() == session.getRemoteTelephoneEventPayloadType()) {
         session.setUpdatedTime(System.currentTimeMillis());
         return;
@@ -88,32 +78,29 @@ public class RtpUdpHandler implements UdpHandler {
 
       AudioCodec codec = chooseCodec(session);
       if (codec == null) {
+        log.warn("No codec selected for callId={}", session.getCallId());
         return;
       }
-//      log.info("RTP codec chosen, callId={}, codecName={}, payloadType={}, sampleRate={}", session.getCallId(),
-//          codec.codecName(), codec.payloadType(), codec.sampleRate());
 
-      // 有些终端可能发来的 payload type 和协商结果不一致，先只按 session 选中 codec 解码
       short[] pcm = codec.decode(in.getPayload());
-      AudioFrame inputFrame = new AudioFrame(pcm, codec.sampleRate(), 1, in.getTimestamp());
-
-//      log.info("RTP decoded to PCM, callId={}, pcmSamples={}, frameSampleRate={}, channels={}, rtpTimestamp={}",
-//          session.getCallId(), pcm != null ? pcm.length : 0, inputFrame.getSampleRate(), inputFrame.getChannels(),
-//          inputFrame.getRtpTimestamp());
+      AudioFrame inputFrame = new AudioFrame(pcm, codec.sampleRate(),
+          NegotiatedAudioFormatResolver.resolveChannels(session), in.getTimestamp());
 
       AudioFrame outputFrame = mediaProcessor.process(inputFrame, session);
       if (outputFrame == null || outputFrame.getSamples() == null || outputFrame.getSamples().length == 0) {
-//        log.info("MediaProcessor returned no audio, callId={}", session.getCallId());
+        //log.info("MediaProcessor returned no audio, callId={}", session.getCallId());
         return;
       }
 
-//      log.info("MediaProcessor output, callId={}, outSamples={}, outSampleRate={}, outChannels={}, outRtpTimestamp={}",
-//          session.getCallId(), outputFrame.getSamples().length, outputFrame.getSampleRate(), outputFrame.getChannels(),
-//          outputFrame.getRtpTimestamp());
+      int targetSampleRate = codec.sampleRate();
+      short[] outputSamples = outputFrame.getSamples();
+      int outputSampleRate = outputFrame.getSampleRate() > 0 ? outputFrame.getSampleRate() : targetSampleRate;
 
-      byte[] outPayload = codec.encode(outputFrame.getSamples());
-//      log.info("RTP encoded from PCM, callId={}, outPayloadBytes={}, codecName={}, codecSampleRate={}",
-//          session.getCallId(), outPayload != null ? outPayload.length : 0, codec.codecName(), codec.sampleRate());
+      if (outputSampleRate != targetSampleRate) {
+        outputSamples = AudioResampler.resample(outputSamples, outputSampleRate, targetSampleRate);
+      }
+
+      byte[] outPayload = codec.encode(outputSamples);
 
       RtpPacket out = new RtpPacket();
       out.setVersion(2);
@@ -123,15 +110,11 @@ public class RtpUdpHandler implements UdpHandler {
       out.setMarker(false);
       out.setPayloadType(session.getSelectedCodec().getPayloadType());
       out.setSequenceNumber(session.nextSendSequence());
-      out.setTimestamp(session.nextSendTimestamp(outputFrame.sampleCount()));
+      out.setTimestamp(session.nextSendTimestamp(outputSamples.length));
       out.setSsrc(session.getLocalSsrc());
       out.setPayload(outPayload);
 
       byte[] outBytes = rtpPacketWriter.write(out);
-//      log.info("RTP send, callId={}, outPt={}, seq={}, ts={}, ssrc={}, packetBytes={}, remoteRtp={}:{}",
-//          session.getCallId(), out.getPayloadType(), out.getSequenceNumber(), out.getTimestamp(), out.getSsrc(),
-//          outBytes != null ? outBytes.length : 0, session.getRemoteRtpIp(), session.getRemoteRtpPort());
-
 
       DatagramPacket resp = new DatagramPacket(outBytes, outBytes.length,
           new InetSocketAddress(session.getRemoteRtpIp(), session.getRemoteRtpPort()));
@@ -144,11 +127,14 @@ public class RtpUdpHandler implements UdpHandler {
   }
 
   private AudioCodec chooseCodec(CallSession session) {
-    if (session.getSelectedCodec() == null) {
+    if (session.getSelectedCodec() == null || session.getSelectedCodec().getCodecName() == null) {
       return null;
     }
 
     String codecName = session.getSelectedCodec().getCodecName();
+    if ("G722".equalsIgnoreCase(codecName)) {
+      return g722Codec;
+    }
     if ("PCMU".equalsIgnoreCase(codecName)) {
       return pcmuCodec;
     }
