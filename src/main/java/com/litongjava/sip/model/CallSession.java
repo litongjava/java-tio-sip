@@ -33,7 +33,6 @@ public class CallSession {
   private int remoteTelephoneEventPayloadType = -1;
   private int ptime = 20;
 
-  // 第三阶段新增
   private long localSsrc = System.nanoTime() & 0xFFFFFFFFL;
   private int sendSequence = 0;
   private long sendTimestamp = 0;

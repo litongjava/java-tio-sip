@@ -23,6 +23,9 @@ import com.litongjava.tio.core.Tio;
 import com.litongjava.tio.core.TioConfig;
 import com.litongjava.tio.server.intf.ServerAioHandler;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 public class SipTcpServerHandler implements ServerAioHandler {
 
   private final String localIp;
@@ -101,6 +104,17 @@ public class SipTcpServerHandler implements ServerAioHandler {
 
   private void handleInvite(SipRequest req, ChannelContext ctx) throws Exception {
     String callId = req.getHeader("Call-ID");
+    byte[] sdpBody = req.getBody();
+    String rawSdp = sdpBody == null ? "" : new String(sdpBody, StandardCharsets.US_ASCII);
+
+    String from = req.getHeader("From");
+    String to = req.getHeader("To");
+    String remoteIp = ctx.getClientNode() != null ? ctx.getClientNode().getIp() : null;
+    int remotePort = ctx.getClientNode() != null ? ctx.getClientNode().getPort() : 0;
+
+    log.info("TCP INVITE received, callId={}, from={}, to={}, remoteSip={}:{}, rawSdp=\n{}", callId, from, to, remoteIp,
+        remotePort, rawSdp);
+
     CallSession exist = sessionManager.getByCallId(callId);
 
     if (exist != null && exist.getLast200Ok() != null) {
@@ -112,17 +126,23 @@ public class SipTcpServerHandler implements ServerAioHandler {
     if (!negotiation.isSuccess()) {
       SipResponse fail = buildSimpleResponse(req, 488, "Not Acceptable Here", null);
       send(ctx, fail);
+      log.warn("TCP SDP negotiate failed, callId={}, reason={}", callId, negotiation.getFailureReason());
       return;
+    } else {
+      log.info(
+          "TCP SDP negotiate success, callId={}, codec={}, pt={}, sampleRate={}, ptime={}, remoteRtp={}:{}, telephoneEventSupported={}, remoteTelephoneEventPt={}",
+          callId, negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getCodecName() : null,
+          negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getPayloadType() : -1,
+          negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getClockRate() : -1,
+          negotiation.getPtime(), negotiation.getRemoteRtpIp(), negotiation.getRemoteRtpPort(),
+          negotiation.isTelephoneEventSupported(), negotiation.getRemoteTelephoneEventPayloadType());
     }
-
-    String remoteIp = ctx.getClientNode() != null ? ctx.getClientNode().getIp() : null;
-    int remotePort = ctx.getClientNode() != null ? ctx.getClientNode().getPort() : 0;
 
     String toTag = "java" + System.nanoTime();
 
     CallSession session = new CallSession();
     session.setCallId(callId);
-    session.setFromTag(parseTag(req.getHeader("From")));
+    session.setFromTag(parseTag(from));
     session.setToTag(toTag);
     session.setTransport("TCP");
     session.setRemoteSipIp(remoteIp);
@@ -140,6 +160,13 @@ public class SipTcpServerHandler implements ServerAioHandler {
 
     rtpServerManager.allocateAndStart(session, mediaProcessor);
 
+    log.info(
+        "TCP session created, callId={}, selectedCodec={}, selectedPt={}, selectedSampleRate={}, localRtpPort={}, remoteRtp={}:{}, ptime={}",
+        callId, session.getSelectedCodec() != null ? session.getSelectedCodec().getCodecName() : null,
+        session.getSelectedCodec() != null ? session.getSelectedCodec().getPayloadType() : -1,
+        session.getSelectedCodec() != null ? session.getSelectedCodec().getClockRate() : -1, session.getLocalRtpPort(),
+        session.getRemoteRtpIp(), session.getRemoteRtpPort(), session.getPtime());
+
     SipResponse resp = buildInvite200Ok(req, session, negotiation);
     byte[] encoded = messageEncoder.encodeResponse(resp);
     String raw200 = new String(encoded, StandardCharsets.US_ASCII);
@@ -152,12 +179,17 @@ public class SipTcpServerHandler implements ServerAioHandler {
 
   private void handleAck(SipRequest req) {
     String callId = req.getHeader("Call-ID");
+    log.info("TCP ACK received, callId={}", callId);
     sessionManager.markAckReceived(callId);
   }
 
   private void handleBye(SipRequest req, ChannelContext ctx) throws Exception {
     String callId = req.getHeader("Call-ID");
     CallSession session = sessionManager.getByCallId(callId);
+
+    log.info("TCP BYE received, callId={}, localRtpPort={}, remoteRtp={}:{}", callId,
+        session != null ? session.getLocalRtpPort() : -1, session != null ? session.getRemoteRtpIp() : null,
+        session != null ? session.getRemoteRtpPort() : -1);
 
     SipResponse resp = buildSimpleResponse(req, 200, "OK", session != null ? session.getToTag() : null);
     send(ctx, resp);

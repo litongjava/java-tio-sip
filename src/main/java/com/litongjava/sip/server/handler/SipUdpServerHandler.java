@@ -21,6 +21,9 @@ import com.litongjava.tio.core.Node;
 import com.litongjava.tio.core.udp.UdpPacket;
 import com.litongjava.tio.core.udp.intf.UdpHandler;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 public class SipUdpServerHandler implements UdpHandler {
 
   private final String localIp;
@@ -80,6 +83,12 @@ public class SipUdpServerHandler implements UdpHandler {
 
   private void handleInvite(SipRequest req, Node remote, DatagramSocket socket) throws Exception {
     String callId = req.getHeader("Call-ID");
+
+    byte[] sdpBody = req.getBody();
+    String rawSdp = sdpBody == null ? "" : new String(sdpBody, StandardCharsets.US_ASCII);
+
+    log.info("UDP INVITE received, callId={}, from={}, to={}, remoteSip={}:{}, rawSdp=\n{}", callId,
+        req.getHeader("From"), req.getHeader("To"), remote.getIp(), remote.getPort(), rawSdp);
     CallSession exist = sessionManager.getByCallId(callId);
 
     if (exist != null && exist.getLast200Ok() != null) {
@@ -91,7 +100,16 @@ public class SipUdpServerHandler implements UdpHandler {
     if (!negotiation.isSuccess()) {
       SipResponse fail = buildSimpleResponse(req, 488, "Not Acceptable Here", null);
       send(socket, remote, fail);
+      log.warn("UDP SDP negotiate failed, callId={}, reason={}", callId, negotiation.getFailureReason());
       return;
+    } else {
+      log.info(
+          "UDP SDP negotiate success, callId={}, codec={}, pt={}, sampleRate={}, ptime={}, remoteRtp={}:{}, telephoneEventSupported={}, remoteTelephoneEventPt={}",
+          callId, negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getCodecName() : null,
+          negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getPayloadType() : -1,
+          negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getClockRate() : -1,
+          negotiation.getPtime(), negotiation.getRemoteRtpIp(), negotiation.getRemoteRtpPort(),
+          negotiation.isTelephoneEventSupported(), negotiation.getRemoteTelephoneEventPayloadType());
     }
 
     String toTag = "java" + System.nanoTime();
@@ -115,6 +133,12 @@ public class SipUdpServerHandler implements UdpHandler {
     session.setPtime(negotiation.getPtime());
 
     rtpServerManager.allocateAndStart(session, mediaProcessor);
+    log.info(
+        "UDP session created, callId={}, selectedCodec={}, selectedPt={}, selectedSampleRate={}, localRtpPort={}, remoteRtp={}:{}, ptime={}",
+        callId, session.getSelectedCodec() != null ? session.getSelectedCodec().getCodecName() : null,
+        session.getSelectedCodec() != null ? session.getSelectedCodec().getPayloadType() : -1,
+        session.getSelectedCodec() != null ? session.getSelectedCodec().getClockRate() : -1, session.getLocalRtpPort(),
+        session.getRemoteRtpIp(), session.getRemoteRtpPort(), session.getPtime());
 
     SipResponse trying = buildSimpleResponse(req, 100, "Trying", null);
     send(socket, remote, trying);
@@ -131,12 +155,17 @@ public class SipUdpServerHandler implements UdpHandler {
 
   private void handleAck(SipRequest req) {
     String callId = req.getHeader("Call-ID");
+    log.info("UDP ACK received, callId={}", callId);
     sessionManager.markAckReceived(callId);
   }
 
   private void handleBye(SipRequest req, Node remote, DatagramSocket socket) throws Exception {
     String callId = req.getHeader("Call-ID");
     CallSession session = sessionManager.getByCallId(callId);
+
+    log.info("UDP BYE received, callId={}, localRtpPort={}, remoteRtp={}:{}", callId,
+        session != null ? session.getLocalRtpPort() : -1, session != null ? session.getRemoteRtpIp() : null,
+        session != null ? session.getRemoteRtpPort() : -1);
 
     SipResponse resp = buildSimpleResponse(req, 200, "OK", session != null ? session.getToTag() : null);
     send(socket, remote, resp);
