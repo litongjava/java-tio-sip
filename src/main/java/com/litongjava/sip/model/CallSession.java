@@ -1,6 +1,7 @@
 package com.litongjava.sip.model;
 
 import com.litongjava.sip.rtp.RtpUdpServer;
+import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 import com.litongjava.sip.sdp.CodecSpec;
 
 public class CallSession {
@@ -43,14 +44,40 @@ public class CallSession {
     return sendSequence;
   }
 
-  public synchronized long nextSendTimestamp(int sampleCount) {
+  public synchronized long nextSendTimestamp(int pcmSampleCount) {
+    int step = toRtpTimestampStep(pcmSampleCount);
+    if (step <= 0) {
+      step = pcmSampleCount > 0 ? pcmSampleCount : 160;
+    }
+
     if (!rtpInitialized) {
       rtpInitialized = true;
-      sendTimestamp = sampleCount;
+      sendTimestamp = step & 0xFFFFFFFFL;
       return sendTimestamp;
     }
-    sendTimestamp = (sendTimestamp + sampleCount) & 0xFFFFFFFFL;
+
+    sendTimestamp = (sendTimestamp + step) & 0xFFFFFFFFL;
     return sendTimestamp;
+  }
+
+  private int toRtpTimestampStep(int pcmSampleCount) {
+    if (pcmSampleCount <= 0) {
+      return 0;
+    }
+
+    CodecSpec codec = this.selectedCodec;
+    int clockRate = codec != null && codec.getClockRate() > 0 ? codec.getClockRate() : 8000;
+    int pcmSampleRate = NegotiatedAudioFormatResolver.resolveSessionPcmSampleRate(codec);
+
+    if (pcmSampleRate <= 0) {
+      pcmSampleRate = clockRate > 0 ? clockRate : 8000;
+    }
+
+    long step = ((long) pcmSampleCount * clockRate) / pcmSampleRate;
+    if (step <= 0) {
+      step = 1;
+    }
+    return (int) step;
   }
 
   public long getLocalSsrc() {

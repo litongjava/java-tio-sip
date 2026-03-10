@@ -170,7 +170,7 @@ public class SdpParser {
 
   public static List<CodecSpec> defaultSupportedCodecs() {
     List<CodecSpec> codecs = new ArrayList<>();
-//    codecs.add(new CodecSpec(9, "G722", 8000));
+    codecs.add(new CodecSpec(9, "G722", 8000));
     codecs.add(new CodecSpec(0, "PCMU", 8000));
     codecs.add(new CodecSpec(8, "PCMA", 8000));
     return codecs;

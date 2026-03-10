@@ -103,13 +103,14 @@ public class SipUdpServerHandler implements UdpHandler {
       log.warn("UDP SDP negotiate failed, callId={}, reason={}", callId, negotiation.getFailureReason());
       return;
     } else {
+      String codec = negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getCodecName() : null;
+      int pt = negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getPayloadType() : -1;
+      int clockRate = negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getClockRate() : -1;
       log.info(
-          "UDP SDP negotiate success, callId={}, codec={}, pt={}, sampleRate={}, ptime={}, remoteRtp={}:{}, telephoneEventSupported={}, remoteTelephoneEventPt={}",
-          callId, negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getCodecName() : null,
-          negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getPayloadType() : -1,
-          negotiation.getSelectedCodec() != null ? negotiation.getSelectedCodec().getClockRate() : -1,
-          negotiation.getPtime(), negotiation.getRemoteRtpIp(), negotiation.getRemoteRtpPort(),
-          negotiation.isTelephoneEventSupported(), negotiation.getRemoteTelephoneEventPayloadType());
+          "UDP SDP negotiate success, callId={}, codec={}, pt={}, clockRate={}, ptime={}, remoteRtp={}:{}, telephoneEventSupported={}, remoteTelephoneEventPt={}",
+          callId, codec, pt, clockRate, negotiation.getPtime(), negotiation.getRemoteRtpIp(),
+          negotiation.getRemoteRtpPort(), negotiation.isTelephoneEventSupported(),
+          negotiation.getRemoteTelephoneEventPayloadType());
     }
 
     String toTag = "java" + System.nanoTime();

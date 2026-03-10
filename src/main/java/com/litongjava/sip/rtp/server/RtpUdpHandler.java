@@ -7,6 +7,7 @@ import java.net.InetSocketAddress;
 import com.litongjava.sip.model.CallSession;
 import com.litongjava.sip.rtp.codec.AudioCodec;
 import com.litongjava.sip.rtp.codec.AudioResampler;
+import com.litongjava.sip.rtp.codec.CodecName;
 import com.litongjava.sip.rtp.codec.G722Codec;
 import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 import com.litongjava.sip.rtp.codec.PcmaCodec;
@@ -88,7 +89,7 @@ public class RtpUdpHandler implements UdpHandler {
 
       AudioFrame outputFrame = mediaProcessor.process(inputFrame, session);
       if (outputFrame == null || outputFrame.getSamples() == null || outputFrame.getSamples().length == 0) {
-        //log.info("MediaProcessor returned no audio, callId={}", session.getCallId());
+        // log.info("MediaProcessor returned no audio, callId={}", session.getCallId());
         return;
       }
 
@@ -132,13 +133,13 @@ public class RtpUdpHandler implements UdpHandler {
     }
 
     String codecName = session.getSelectedCodec().getCodecName();
-    if ("G722".equalsIgnoreCase(codecName)) {
+    if (CodecName.G722.equalsIgnoreCase(codecName)) {
       return g722Codec;
     }
-    if ("PCMU".equalsIgnoreCase(codecName)) {
+    if (CodecName.PCMU.equalsIgnoreCase(codecName)) {
       return pcmuCodec;
     }
-    if ("PCMA".equalsIgnoreCase(codecName)) {
+    if (CodecName.PCMA.equalsIgnoreCase(codecName)) {
       return pcmaCodec;
     }
     return null;
