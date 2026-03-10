@@ -82,11 +82,7 @@ public class RtpUdpHandler implements UdpHandler {
       int sessionChannels = session.getChannels() > 0 ? session.getChannels() : 1;
 
       short[] pcm = codec.decode(in.getPayload());
-      AudioFrame inputFrame = new AudioFrame(
-          pcm,
-          sessionSampleRate,
-          sessionChannels,
-          in.getTimestamp());
+      AudioFrame inputFrame = new AudioFrame(pcm, sessionSampleRate, sessionChannels, in.getTimestamp());
 
       AudioFrame outputFrame = mediaProcessor.process(inputFrame, session);
       if (outputFrame == null || outputFrame.getSamples() == null || outputFrame.getSamples().length == 0) {
@@ -117,9 +113,7 @@ public class RtpUdpHandler implements UdpHandler {
 
       byte[] outBytes = rtpPacketWriter.write(out);
 
-      DatagramPacket resp = new DatagramPacket(
-          outBytes,
-          outBytes.length,
+      DatagramPacket resp = new DatagramPacket(outBytes, outBytes.length,
           new InetSocketAddress(session.getRemoteRtpIp(), session.getRemoteRtpPort()));
       socket.send(resp);
 

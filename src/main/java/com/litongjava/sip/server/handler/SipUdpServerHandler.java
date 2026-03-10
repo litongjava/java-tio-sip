@@ -132,6 +132,7 @@ public class SipUdpServerHandler implements UdpHandler {
     session.setTelephoneEventSupported(negotiation.isTelephoneEventSupported());
     session.setRemoteTelephoneEventPayloadType(negotiation.getRemoteTelephoneEventPayloadType());
     session.setPtime(negotiation.getPtime());
+    
 
     rtpServerManager.allocateAndStart(session, mediaProcessor);
     log.info(

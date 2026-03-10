@@ -2,6 +2,7 @@ package com.litongjava.sip.model;
 
 import com.litongjava.sip.rtp.RtpUdpServer;
 import com.litongjava.sip.rtp.codec.AudioCodec;
+import com.litongjava.sip.rtp.codec.AudioResampler;
 import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 import com.litongjava.sip.sdp.CodecSpec;
 
@@ -34,6 +35,10 @@ public class CallSession {
   private RtpUdpServer rtpServer;
 
   private CodecSpec selectedCodec;
+
+  private AudioResampler inputResampler;
+  private AudioResampler outputResampler;
+
   private boolean telephoneEventSupported;
   private int remoteTelephoneEventPayloadType = -1;
   private int ptime = 20;
@@ -98,7 +103,7 @@ public class CallSession {
     this.audioCodec = audioCodec;
   }
 
-  public synchronized void releaseAudioCodec() {
+  public synchronized void release() {
     if (audioCodec instanceof AutoCloseable) {
       try {
         ((AutoCloseable) audioCodec).close();
@@ -107,6 +112,22 @@ public class CallSession {
       }
     }
     audioCodec = null;
+
+    if (inputResampler != null) {
+      try {
+        inputResampler.close();
+      } catch (Exception ignore) {
+      }
+      inputResampler = null;
+    }
+
+    if (outputResampler != null) {
+      try {
+        outputResampler.close();
+      } catch (Exception ignore) {
+      }
+      outputResampler = null;
+    }
   }
 
   public long getLocalSsrc() {
@@ -315,5 +336,61 @@ public class CallSession {
 
   public void setChannels(int channels) {
     this.channels = channels;
+  }
+
+  public AudioResampler getInputResampler() {
+    return inputResampler;
+  }
+
+  public void setInputResampler(AudioResampler inputResampler) {
+    this.inputResampler = inputResampler;
+  }
+
+  public AudioResampler getOutputResampler() {
+    return outputResampler;
+  }
+
+  public void setOutputResampler(AudioResampler outputResampler) {
+    this.outputResampler = outputResampler;
+  }
+
+  public synchronized AudioResampler getOrCreateInputResampler(int srcRate, int dstRate) {
+    if (srcRate <= 0 || dstRate <= 0 || srcRate == dstRate) {
+      return null;
+    }
+
+    if (inputResampler != null) {
+      if (inputResampler.getSrcRate() == srcRate && inputResampler.getDstRate() == dstRate) {
+        return inputResampler;
+      }
+      try {
+        inputResampler.close();
+      } catch (Exception ignore) {
+      }
+      inputResampler = null;
+    }
+
+    inputResampler = new AudioResampler(1, srcRate, dstRate, 5, 0);
+    return inputResampler;
+  }
+
+  public synchronized AudioResampler getOrCreateOutputResampler(int srcRate, int dstRate) {
+    if (srcRate <= 0 || dstRate <= 0 || srcRate == dstRate) {
+      return null;
+    }
+
+    if (outputResampler != null) {
+      if (outputResampler.getSrcRate() == srcRate && outputResampler.getDstRate() == dstRate) {
+        return outputResampler;
+      }
+      try {
+        outputResampler.close();
+      } catch (Exception ignore) {
+      }
+      outputResampler = null;
+    }
+
+    outputResampler = new AudioResampler(1, srcRate, dstRate, 5, 0);
+    return outputResampler;
   }
 }

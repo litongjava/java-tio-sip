@@ -147,7 +147,7 @@ public class CallSessionManager {
       callIdByLocalRtpPort.remove(localRtpPort, callId);
     }
 
-    removed.releaseAudioCodec();
+    removed.release();
     return true;
   }
 
@@ -162,7 +162,7 @@ public class CallSessionManager {
           if (localRtpPort > 0) {
             callIdByLocalRtpPort.remove(localRtpPort, callId);
           }
-          session.releaseAudioCodec();
+          session.release();
           removedCount++;
         }
       }
