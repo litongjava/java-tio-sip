@@ -22,7 +22,9 @@ public final class AudioResampler implements AutoCloseable {
   private final int channels;
   private final int srcRate;
   private final int dstRate;
+  @SuppressWarnings("unused")
   private final int quality;
+  @SuppressWarnings("unused")
   private final int options;
 
   private final Object lock = new Object();
