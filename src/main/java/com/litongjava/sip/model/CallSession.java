@@ -38,6 +38,7 @@ public class CallSession {
 
   private AudioResampler inputResampler;
   private AudioResampler outputResampler;
+  private AudioResampler rtpResampler;
 
   private boolean telephoneEventSupported;
   private int remoteTelephoneEventPayloadType = -1;
@@ -127,6 +128,14 @@ public class CallSession {
       } catch (Exception ignore) {
       }
       outputResampler = null;
+    }
+
+    if (rtpResampler != null) {
+      try {
+        rtpResampler.close();
+      } catch (Exception ignore) {
+      }
+      rtpResampler = null;
     }
   }
 
@@ -354,6 +363,14 @@ public class CallSession {
     this.outputResampler = outputResampler;
   }
 
+  public AudioResampler getRtpResampler() {
+    return rtpResampler;
+  }
+
+  public void setRtpResampler(AudioResampler rtpResampler) {
+    this.rtpResampler = rtpResampler;
+  }
+
   public synchronized AudioResampler getOrCreateInputResampler(int srcRate, int dstRate) {
     if (srcRate <= 0 || dstRate <= 0 || srcRate == dstRate) {
       return null;
@@ -392,5 +409,25 @@ public class CallSession {
 
     outputResampler = new AudioResampler(1, srcRate, dstRate, 5, 0);
     return outputResampler;
+  }
+
+  public synchronized AudioResampler getOrCreateRtpResampler(int srcRate, int dstRate) {
+    if (srcRate <= 0 || dstRate <= 0 || srcRate == dstRate) {
+      return null;
+    }
+
+    if (rtpResampler != null) {
+      if (rtpResampler.getSrcRate() == srcRate && rtpResampler.getDstRate() == dstRate) {
+        return rtpResampler;
+      }
+      try {
+        rtpResampler.close();
+      } catch (Exception ignore) {
+      }
+      rtpResampler = null;
+    }
+
+    rtpResampler = new AudioResampler(1, srcRate, dstRate, 5, 0);
+    return rtpResampler;
   }
 }

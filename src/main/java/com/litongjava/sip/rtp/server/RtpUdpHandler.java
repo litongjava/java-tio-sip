@@ -94,7 +94,8 @@ public class RtpUdpHandler implements UdpHandler {
       int targetSampleRate = codec.sampleRate();
 
       if (outputSampleRate != targetSampleRate) {
-        outputSamples = AudioResampler.resample(outputSamples, outputSampleRate, targetSampleRate);
+        AudioResampler rtpResampler = session.getOrCreateRtpResampler(outputSampleRate, targetSampleRate);
+        outputSamples = rtpResampler.resample(outputSamples);
       }
 
       byte[] outPayload = codec.encode(outputSamples);
