@@ -1,6 +1,29 @@
 package com.litongjava.sip.rtp.codec;
 
-public class PcmaCodec implements AudioCodec {
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+import com.litongjava.media.MediaCodec;
+
+public class PcmaCodec implements AudioCodec, AutoCloseable {
+
+  private static final int CODEC_TYPE = MediaCodec.CODEC_PCMA;
+  private static final int SAMPLE_RATE = 8000;
+  private static final int CHANNELS = 1;
+  private static final int BITRATE = 0;
+  private static final int OPTIONS = 0;
+
+  private final Object encodeLock = new Object();
+  private final Object decodeLock = new Object();
+
+  private long encoder;
+  private long decoder;
+
+  private ByteBuffer encodePcmBuffer;
+  private ByteBuffer encodeOutBuffer;
+
+  private ByteBuffer decodeInBuffer;
+  private ByteBuffer decodePcmBuffer;
 
   @Override
   public String codecName() {
@@ -14,70 +37,126 @@ public class PcmaCodec implements AudioCodec {
 
   @Override
   public int sampleRate() {
-    return 8000;
+    return SAMPLE_RATE;
   }
 
   @Override
   public short[] decode(byte[] payload) {
-    short[] out = new short[payload.length];
-    for (int i = 0; i < payload.length; i++) {
-      out[i] = alawToLinear(payload[i]);
+    if (payload == null || payload.length == 0) {
+      return new short[0];
     }
-    return out;
+
+    synchronized (decodeLock) {
+      ensureDecoder();
+
+      int encodedLen = payload.length;
+      int pcmSamplesCapacity = encodedLen;
+      int pcmBytesCapacity = pcmSamplesCapacity * 2;
+
+      decodeInBuffer = ensureDirectBuffer(decodeInBuffer, encodedLen, ByteOrder.BIG_ENDIAN);
+      decodePcmBuffer = ensureDirectBuffer(decodePcmBuffer, pcmBytesCapacity, ByteOrder.LITTLE_ENDIAN);
+
+      decodeInBuffer.clear();
+      decodePcmBuffer.clear();
+
+      decodeInBuffer.put(payload);
+
+      int decodedSamples = MediaCodec.decodeDirect(decoder, decodeInBuffer, encodedLen, decodePcmBuffer);
+      if (decodedSamples < 0) {
+        throw new IllegalStateException("PCMA decodeDirect failed, code=" + decodedSamples);
+      }
+
+      short[] out = new short[decodedSamples];
+      for (int i = 0; i < decodedSamples; i++) {
+        out[i] = decodePcmBuffer.getShort(i * 2);
+      }
+      return out;
+    }
   }
 
   @Override
   public byte[] encode(short[] pcm16) {
-    byte[] out = new byte[pcm16.length];
-    for (int i = 0; i < pcm16.length; i++) {
-      out[i] = linearToAlaw(pcm16[i]);
-    }
-    return out;
-  }
-
-  private short alawToLinear(byte alaw) {
-    int a = alaw ^ 0x55;
-    int sign = a & 0x80;
-    int exponent = (a & 0x70) >> 4;
-    int mantissa = a & 0x0F;
-
-    int sample;
-    if (exponent == 0) {
-      sample = (mantissa << 4) + 8;
-    } else {
-      sample = ((mantissa << 4) + 0x108) << (exponent - 1);
+    if (pcm16 == null || pcm16.length == 0) {
+      return new byte[0];
     }
 
-    return (short) (sign == 0 ? sample : -sample);
-  }
+    synchronized (encodeLock) {
+      ensureEncoder();
 
-  private byte linearToAlaw(short sample) {
-    int pcm = sample;
-    int sign;
-    int exponent;
-    int mantissa;
-    int alaw;
+      int pcmSamples = pcm16.length;
+      int pcmBytes = pcmSamples * 2;
+      int encodedCapacity = pcmSamples;
 
-    sign = (pcm & 0x8000) >> 8;
-    if (sign != 0) {
-      pcm = -pcm;
-    }
+      encodePcmBuffer = ensureDirectBuffer(encodePcmBuffer, pcmBytes, ByteOrder.LITTLE_ENDIAN);
+      encodeOutBuffer = ensureDirectBuffer(encodeOutBuffer, encodedCapacity, ByteOrder.BIG_ENDIAN);
 
-    if (pcm > 32767) {
-      pcm = 32767;
-    }
+      encodePcmBuffer.clear();
+      encodeOutBuffer.clear();
 
-    if (pcm >= 256) {
-      exponent = 7;
-      for (int expMask = 0x4000; (pcm & expMask) == 0 && exponent > 0; exponent--, expMask >>= 1) {
+      for (int i = 0; i < pcmSamples; i++) {
+        encodePcmBuffer.putShort(i * 2, pcm16[i]);
       }
-      mantissa = (pcm >> (exponent + 3)) & 0x0F;
-      alaw = (exponent << 4) | mantissa;
-    } else {
-      alaw = pcm >> 4;
+
+      int encodedLen = MediaCodec.encodeDirect(encoder, encodePcmBuffer, pcmSamples, encodeOutBuffer);
+      if (encodedLen < 0) {
+        throw new IllegalStateException("PCMA encodeDirect failed, code=" + encodedLen);
+      }
+
+      byte[] out = new byte[encodedLen];
+      for (int i = 0; i < encodedLen; i++) {
+        out[i] = encodeOutBuffer.get(i);
+      }
+      return out;
+    }
+  }
+
+  private void ensureEncoder() {
+    if (encoder != 0) {
+      return;
+    }
+    encoder = MediaCodec.createEncoder(CODEC_TYPE, SAMPLE_RATE, CHANNELS, BITRATE, OPTIONS);
+    if (encoder == 0) {
+      throw new IllegalStateException("Failed to create PCMA encoder");
+    }
+  }
+
+  private void ensureDecoder() {
+    if (decoder != 0) {
+      return;
+    }
+    decoder = MediaCodec.createDecoder(CODEC_TYPE, SAMPLE_RATE, CHANNELS, BITRATE, OPTIONS);
+    if (decoder == 0) {
+      throw new IllegalStateException("Failed to create PCMA decoder");
+    }
+  }
+
+  private static ByteBuffer ensureDirectBuffer(ByteBuffer buffer, int capacity, ByteOrder order) {
+    if (buffer != null && buffer.capacity() >= capacity) {
+      buffer.clear();
+      buffer.order(order);
+      return buffer;
+    }
+    return ByteBuffer.allocateDirect(capacity).order(order);
+  }
+
+  @Override
+  public void close() {
+    synchronized (encodeLock) {
+      if (encoder != 0) {
+        MediaCodec.destroyEncoder(encoder);
+        encoder = 0;
+      }
+      encodePcmBuffer = null;
+      encodeOutBuffer = null;
     }
 
-    alaw ^= (sign ^ 0x55);
-    return (byte) alaw;
+    synchronized (decodeLock) {
+      if (decoder != 0) {
+        MediaCodec.destroyDecoder(decoder);
+        decoder = 0;
+      }
+      decodeInBuffer = null;
+      decodePcmBuffer = null;
+    }
   }
 }

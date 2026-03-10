@@ -1,6 +1,6 @@
 package com.litongjava.sip.rtp.codec;
 
-public interface AudioCodec {
+public interface AudioCodec{
 
   String codecName();
 
@@ -11,4 +11,6 @@ public interface AudioCodec {
   short[] decode(byte[] payload);
 
   byte[] encode(short[] pcm16);
+  
+  
 }

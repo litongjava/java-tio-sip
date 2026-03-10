@@ -17,15 +17,10 @@ import com.litongjava.media.MediaCodec;
 public class G722Codec implements AudioCodec, AutoCloseable {
 
   private static final int CODEC_TYPE = MediaCodec.CODEC_G722;
-  private static final int DEFAULT_SAMPLE_RATE = 16000;
-  private static final int DEFAULT_CHANNELS = 1;
-  private static final int DEFAULT_BITRATE = 64000;
-  private static final int DEFAULT_OPTIONS = 0;
-
-  private final int sampleRate;
-  private final int channels;
-  private final int bitrate;
-  private final int options;
+  private static final int SAMPLE_RATE = 16000;
+  private static final int CHANNELS = 1;
+  private static final int BITRATE = 64000;
+  private static final int OPTIONS = 0;
 
   private final Object encodeLock = new Object();
   private final Object decodeLock = new Object();
@@ -39,31 +34,6 @@ public class G722Codec implements AudioCodec, AutoCloseable {
   private ByteBuffer decodeInBuffer;
   private ByteBuffer decodePcmBuffer;
 
-  public G722Codec() {
-    this(DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS, DEFAULT_BITRATE, DEFAULT_OPTIONS);
-  }
-
-  public G722Codec(int bitrate) {
-    this(DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS, bitrate, DEFAULT_OPTIONS);
-  }
-
-  public G722Codec(int sampleRate, int channels, int bitrate, int options) {
-    if (sampleRate != 16000) {
-      throw new IllegalArgumentException("G722 PCM sampleRate must be 16000, but got: " + sampleRate);
-    }
-    if (channels != 1) {
-      throw new IllegalArgumentException("G722 currently only supports mono, but got channels=" + channels);
-    }
-    if (bitrate != 64000 && bitrate != 56000 && bitrate != 48000) {
-      throw new IllegalArgumentException("G722 bitrate must be one of 64000 / 56000 / 48000, but got: " + bitrate);
-    }
-
-    this.sampleRate = sampleRate;
-    this.channels = channels;
-    this.bitrate = bitrate;
-    this.options = options;
-  }
-
   @Override
   public String codecName() {
     return "G722";
@@ -76,11 +46,11 @@ public class G722Codec implements AudioCodec, AutoCloseable {
 
   /**
    * RTP/SDP 中 G722 常写为 G722/8000，
-   * 这里返回媒体处理层的 PCM 采样率：16000。
+   * 这里返回媒体处理层使用的 PCM 采样率 16000。
    */
   @Override
   public int sampleRate() {
-    return sampleRate;
+    return SAMPLE_RATE;
   }
 
   @Override
@@ -157,7 +127,7 @@ public class G722Codec implements AudioCodec, AutoCloseable {
     if (encoder != 0) {
       return;
     }
-    encoder = MediaCodec.createEncoder(CODEC_TYPE, sampleRate, channels, bitrate, options);
+    encoder = MediaCodec.createEncoder(CODEC_TYPE, SAMPLE_RATE, CHANNELS, BITRATE, OPTIONS);
     if (encoder == 0) {
       throw new IllegalStateException("Failed to create G722 encoder");
     }
@@ -167,35 +137,19 @@ public class G722Codec implements AudioCodec, AutoCloseable {
     if (decoder != 0) {
       return;
     }
-    decoder = MediaCodec.createDecoder(CODEC_TYPE, sampleRate, channels, bitrate, options);
+    decoder = MediaCodec.createDecoder(CODEC_TYPE, SAMPLE_RATE, CHANNELS, BITRATE, OPTIONS);
     if (decoder == 0) {
       throw new IllegalStateException("Failed to create G722 decoder");
     }
   }
 
-  /**
-   * 估算编码后字节数。
-   *
-   * 公式：
-   * encodedBytes = pcmSamples * bitrate / 8 / sampleRate
-   *
-   * 再额外预留少量冗余，避免 native 写满。
-   */
   private int estimateEncodedBytes(int pcmSamples) {
-    long bytes = ((long) pcmSamples * bitrate + (sampleRate * 8L - 1)) / (sampleRate * 8L);
+    long bytes = ((long) pcmSamples * BITRATE + (SAMPLE_RATE * 8L - 1)) / (SAMPLE_RATE * 8L);
     return (int) Math.max(bytes + 16, 64);
   }
 
-  /**
-   * 估算解码后的 PCM sample 数。
-   *
-   * 公式：
-   * pcmSamples = encodedBytes * 8 * sampleRate / bitrate
-   *
-   * 再额外预留少量冗余。
-   */
   private int estimateDecodedSamples(int encodedBytes) {
-    long samples = ((long) encodedBytes * 8L * sampleRate + bitrate - 1) / bitrate;
+    long samples = ((long) encodedBytes * 8L * SAMPLE_RATE + BITRATE - 1) / BITRATE;
     return (int) Math.max(samples + 16, 160);
   }
 
@@ -227,20 +181,5 @@ public class G722Codec implements AudioCodec, AutoCloseable {
       decodeInBuffer = null;
       decodePcmBuffer = null;
     }
-  }
-
-  @Override
-  protected void finalize() throws Throwable {
-    try {
-      close();
-    } finally {
-      super.finalize();
-    }
-  }
-
-  @Override
-  public String toString() {
-    return "G722Codec{" + "sampleRate=" + sampleRate + ", channels=" + channels + ", bitrate=" + bitrate + ", options="
-        + options + '}';
   }
 }

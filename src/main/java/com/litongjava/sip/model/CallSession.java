@@ -1,10 +1,14 @@
 package com.litongjava.sip.model;
 
 import com.litongjava.sip.rtp.RtpUdpServer;
+import com.litongjava.sip.rtp.codec.AudioCodec;
 import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 import com.litongjava.sip.sdp.CodecSpec;
 
 public class CallSession {
+
+  private int pcmSampleRate;
+  private int channels = 1;
 
   private String callId;
   private String fromTag;
@@ -33,6 +37,12 @@ public class CallSession {
   private boolean telephoneEventSupported;
   private int remoteTelephoneEventPayloadType = -1;
   private int ptime = 20;
+
+  /**
+   * 一个 session 一个运行时 codec 实例。
+   * 对于 JNI codec，避免多个会话共享同一个 native 状态对象。
+   */
+  private AudioCodec audioCodec;
 
   private long localSsrc = System.nanoTime() & 0xFFFFFFFFL;
   private int sendSequence = 0;
@@ -78,6 +88,25 @@ public class CallSession {
       step = 1;
     }
     return (int) step;
+  }
+
+  public synchronized AudioCodec getAudioCodec() {
+    return audioCodec;
+  }
+
+  public synchronized void setAudioCodec(AudioCodec audioCodec) {
+    this.audioCodec = audioCodec;
+  }
+
+  public synchronized void releaseAudioCodec() {
+    if (audioCodec instanceof AutoCloseable) {
+      try {
+        ((AutoCloseable) audioCodec).close();
+      } catch (Exception e) {
+        // ignore
+      }
+    }
+    audioCodec = null;
   }
 
   public long getLocalSsrc() {
@@ -270,5 +299,21 @@ public class CallSession {
 
   public void setPtime(int ptime) {
     this.ptime = ptime;
+  }
+
+  public int getPcmSampleRate() {
+    return pcmSampleRate;
+  }
+
+  public void setPcmSampleRate(int pcmSampleRate) {
+    this.pcmSampleRate = pcmSampleRate;
+  }
+
+  public int getChannels() {
+    return channels;
+  }
+
+  public void setChannels(int channels) {
+    this.channels = channels;
   }
 }

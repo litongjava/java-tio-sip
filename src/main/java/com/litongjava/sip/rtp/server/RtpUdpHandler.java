@@ -35,10 +35,6 @@ public class RtpUdpHandler implements UdpHandler {
   private final RtpPacketWriter rtpPacketWriter = new RtpPacketWriter();
   private final MediaProcessor mediaProcessor;
 
-  private final AudioCodec pcmuCodec = new PcmuCodec();
-  private final AudioCodec pcmaCodec = new PcmaCodec();
-  private final AudioCodec g722Codec = new G722Codec();
-
   public RtpUdpHandler(int localPort, CallSessionManager sessionManager) {
     this(localPort, sessionManager, new EchoMediaProcessor());
   }
@@ -77,7 +73,7 @@ public class RtpUdpHandler implements UdpHandler {
         return;
       }
 
-      AudioCodec codec = chooseCodec(session);
+      AudioCodec codec = getOrCreateSessionCodec(session);
       if (codec == null) {
         log.warn("No codec selected for callId={}", session.getCallId());
         return;
@@ -89,7 +85,6 @@ public class RtpUdpHandler implements UdpHandler {
 
       AudioFrame outputFrame = mediaProcessor.process(inputFrame, session);
       if (outputFrame == null || outputFrame.getSamples() == null || outputFrame.getSamples().length == 0) {
-        // log.info("MediaProcessor returned no audio, callId={}", session.getCallId());
         return;
       }
 
@@ -127,20 +122,39 @@ public class RtpUdpHandler implements UdpHandler {
     }
   }
 
-  private AudioCodec chooseCodec(CallSession session) {
+  private AudioCodec getOrCreateSessionCodec(CallSession session) {
+    AudioCodec codec = session.getAudioCodec();
+    if (codec != null) {
+      return codec;
+    }
+
+    synchronized (session) {
+      codec = session.getAudioCodec();
+      if (codec != null) {
+        return codec;
+      }
+
+      codec = createCodec(session);
+      session.setAudioCodec(codec);
+      return codec;
+    }
+  }
+
+  private AudioCodec createCodec(CallSession session) {
     if (session.getSelectedCodec() == null || session.getSelectedCodec().getCodecName() == null) {
       return null;
     }
 
     String codecName = session.getSelectedCodec().getCodecName();
+
     if (CodecName.G722.equalsIgnoreCase(codecName)) {
-      return g722Codec;
+      return new G722Codec();
     }
     if (CodecName.PCMU.equalsIgnoreCase(codecName)) {
-      return pcmuCodec;
+      return new PcmuCodec();
     }
     if (CodecName.PCMA.equalsIgnoreCase(codecName)) {
-      return pcmaCodec;
+      return new PcmaCodec();
     }
     return null;
   }
