@@ -9,7 +9,6 @@ import com.litongjava.sip.rtp.codec.AudioCodec;
 import com.litongjava.sip.rtp.codec.AudioResampler;
 import com.litongjava.sip.rtp.codec.CodecName;
 import com.litongjava.sip.rtp.codec.G722Codec;
-import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 import com.litongjava.sip.rtp.codec.PcmaCodec;
 import com.litongjava.sip.rtp.codec.PcmuCodec;
 import com.litongjava.sip.rtp.media.AudioFrame;
@@ -79,18 +78,24 @@ public class RtpUdpHandler implements UdpHandler {
         return;
       }
 
+      int sessionSampleRate = session.getPcmSampleRate() > 0 ? session.getPcmSampleRate() : codec.sampleRate();
+      int sessionChannels = session.getChannels() > 0 ? session.getChannels() : 1;
+
       short[] pcm = codec.decode(in.getPayload());
-      AudioFrame inputFrame = new AudioFrame(pcm, codec.sampleRate(),
-          NegotiatedAudioFormatResolver.resolveChannels(session), in.getTimestamp());
+      AudioFrame inputFrame = new AudioFrame(
+          pcm,
+          sessionSampleRate,
+          sessionChannels,
+          in.getTimestamp());
 
       AudioFrame outputFrame = mediaProcessor.process(inputFrame, session);
       if (outputFrame == null || outputFrame.getSamples() == null || outputFrame.getSamples().length == 0) {
         return;
       }
 
-      int targetSampleRate = codec.sampleRate();
       short[] outputSamples = outputFrame.getSamples();
-      int outputSampleRate = outputFrame.getSampleRate() > 0 ? outputFrame.getSampleRate() : targetSampleRate;
+      int outputSampleRate = outputFrame.getSampleRate() > 0 ? outputFrame.getSampleRate() : sessionSampleRate;
+      int targetSampleRate = codec.sampleRate();
 
       if (outputSampleRate != targetSampleRate) {
         outputSamples = AudioResampler.resample(outputSamples, outputSampleRate, targetSampleRate);
@@ -112,7 +117,9 @@ public class RtpUdpHandler implements UdpHandler {
 
       byte[] outBytes = rtpPacketWriter.write(out);
 
-      DatagramPacket resp = new DatagramPacket(outBytes, outBytes.length,
+      DatagramPacket resp = new DatagramPacket(
+          outBytes,
+          outBytes.length,
           new InetSocketAddress(session.getRemoteRtpIp(), session.getRemoteRtpPort()));
       socket.send(resp);
 

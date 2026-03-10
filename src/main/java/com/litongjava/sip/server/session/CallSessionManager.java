@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import com.litongjava.sip.model.CallSession;
+import com.litongjava.sip.rtp.codec.NegotiatedAudioFormatResolver;
 
 public class CallSessionManager {
 
@@ -27,6 +28,8 @@ public class CallSessionManager {
       throw new IllegalArgumentException("call session or callId is null");
     }
 
+    initNegotiatedMediaFormat(session);
+
     final String callId = session.getCallId();
     final int newPort = session.getLocalRtpPort();
     final long now = System.currentTimeMillis();
@@ -37,6 +40,16 @@ public class CallSessionManager {
         int oldPort = oldSession.getLocalRtpPort();
         if (oldPort > 0 && oldPort != newPort) {
           callIdByLocalRtpPort.remove(oldPort, callId);
+        }
+
+        if (session.getAudioCodec() == null) {
+          session.setAudioCodec(oldSession.getAudioCodec());
+        }
+        if (session.getPcmSampleRate() <= 0) {
+          session.setPcmSampleRate(oldSession.getPcmSampleRate());
+        }
+        if (session.getChannels() <= 0) {
+          session.setChannels(oldSession.getChannels());
         }
       }
 
@@ -51,6 +64,20 @@ public class CallSessionManager {
     });
 
     return session;
+  }
+
+  private void initNegotiatedMediaFormat(CallSession session) {
+    if (session == null) {
+      return;
+    }
+
+    if (session.getPcmSampleRate() <= 0) {
+      session.setPcmSampleRate(NegotiatedAudioFormatResolver.resolveSessionPcmSampleRate(session));
+    }
+
+    if (session.getChannels() <= 0) {
+      session.setChannels(NegotiatedAudioFormatResolver.resolveChannels(session));
+    }
   }
 
   public boolean updateLocalRtpPort(String callId, int newLocalRtpPort) {
