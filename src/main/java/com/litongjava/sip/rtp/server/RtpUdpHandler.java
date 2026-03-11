@@ -58,9 +58,11 @@ public class RtpUdpHandler implements UdpHandler {
         return;
       }
 
-      if (!looksLikeRtp(data)) {
-        log.debug("ignore non-rtp packet, localPort={}, from={}:{}, len={}", localPort, remote.getIp(),
-            remote.getPort(), data.length);
+      int b0 = data[0] & 0xFF;
+      int version = (b0 >> 6) & 0x03;
+      if (version != 2) {
+        log.error("DROP non-RTP packet, localPort={}, from={}:{}, len={}, b0={}, version={}", localPort, remote.getIp(),
+            remote.getPort(), data.length, b0, version);
         return;
       }
 
