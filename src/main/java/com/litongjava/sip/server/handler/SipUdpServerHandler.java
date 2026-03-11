@@ -51,6 +51,12 @@ public class SipUdpServerHandler implements UdpHandler {
       Node remote = udpPacket.getRemote();
       byte[] data = udpPacket.getData();
 
+      if (!looksLikeSip(data)) {
+        log.debug("ignore non-sip packet, from={}:{}, len={}", remote.getIp(), remote.getPort(),
+            data == null ? 0 : data.length);
+        return;
+      }
+
       SipMessage msg = messageParser.parse(data);
       if (!(msg instanceof SipRequest)) {
         return;
@@ -77,8 +83,19 @@ public class SipUdpServerHandler implements UdpHandler {
       SipResponse resp = buildSimpleResponse(req, 200, "OK", null);
       send(socket, remote, resp);
     } catch (Exception e) {
-      e.printStackTrace();
+      log.error("sip udp handler error", e);
     }
+  }
+
+  private boolean looksLikeSip(byte[] data) {
+    if (data == null || data.length == 0) {
+      return false;
+    }
+    String text = new String(data, 0, Math.min(data.length, 32), StandardCharsets.US_ASCII).trim();
+    return text.startsWith("INVITE ") || text.startsWith("ACK ") || text.startsWith("BYE ")
+        || text.startsWith("REGISTER ") || text.startsWith("OPTIONS ") || text.startsWith("CANCEL ")
+        || text.startsWith("MESSAGE ") || text.startsWith("INFO ") || text.startsWith("UPDATE ")
+        || text.startsWith("SIP/2.0 ");
   }
 
   private void handleInvite(SipRequest req, Node remote, DatagramSocket socket) throws Exception {

@@ -58,6 +58,12 @@ public class RtpUdpHandler implements UdpHandler {
         return;
       }
 
+      if (!looksLikeRtp(data)) {
+        log.debug("ignore non-rtp packet, localPort={}, from={}:{}, len={}", localPort, remote.getIp(),
+            remote.getPort(), data.length);
+        return;
+      }
+
       RtpPacket in = rtpPacketParser.parse(data);
 
       if (session.getRemoteRtpIp() == null || session.getRemoteRtpIp().isEmpty()) {
@@ -119,9 +125,20 @@ public class RtpUdpHandler implements UdpHandler {
       socket.send(resp);
 
       session.setUpdatedTime(System.currentTimeMillis());
+    } catch (IllegalArgumentException e) {
+      log.debug("ignore invalid/non-rtp packet, localPort={}, msg={}", localPort, e.getMessage());
     } catch (Exception e) {
       log.error("rtp handler error, localPort={}", localPort, e);
     }
+  }
+
+  private boolean looksLikeRtp(byte[] data) {
+    if (data == null || data.length < 12) {
+      return false;
+    }
+    int b0 = data[0] & 0xFF;
+    int version = (b0 >> 6) & 0x03;
+    return version == 2;
   }
 
   private AudioCodec getOrCreateSessionCodec(CallSession session) {
