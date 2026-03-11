@@ -132,7 +132,6 @@ public class SipUdpServerHandler implements UdpHandler {
     session.setTelephoneEventSupported(negotiation.isTelephoneEventSupported());
     session.setRemoteTelephoneEventPayloadType(negotiation.getRemoteTelephoneEventPayloadType());
     session.setPtime(negotiation.getPtime());
-    
 
     rtpServerManager.allocateAndStart(session, mediaProcessor);
     log.info(
@@ -216,6 +215,7 @@ public class SipUdpServerHandler implements UdpHandler {
     resp.addHeader("Content-Type", "application/sdp");
 
     String sdp = sdpAnswerBuilder.buildAnswer(localIp, session.getLocalRtpPort(), negotiation);
+    log.info("raw response sdp=\n{}", sdp);
     resp.setBody(sdp.getBytes(StandardCharsets.US_ASCII));
     return resp;
   }
