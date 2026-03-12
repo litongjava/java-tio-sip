@@ -12,6 +12,7 @@ import com.litongjava.sip.model.SipResponse;
 import com.litongjava.sip.parser.SipMessageEncoder;
 import com.litongjava.sip.parser.SipMessageParser;
 import com.litongjava.sip.rtp.RtpServerManager;
+import com.litongjava.sip.rtp.media.EchoMediaProcessor;
 import com.litongjava.sip.rtp.media.MediaProcessor;
 import com.litongjava.sip.sdp.SdpAnswerBuilder;
 import com.litongjava.sip.sdp.SdpNegotiationResult;
@@ -26,6 +27,8 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class SipUdpServerHandler implements UdpHandler {
 
+  private static final String ECHO_TEST_EXTENSION = "9196";
+
   private final String localIp;
   private final SipMessageParser messageParser = new SipMessageParser();
   private final SipMessageEncoder messageEncoder = new SipMessageEncoder();
@@ -35,14 +38,23 @@ public class SipUdpServerHandler implements UdpHandler {
 
   private final CallSessionManager sessionManager;
   private final RtpServerManager rtpServerManager;
-  private final MediaProcessor mediaProcessor;
+
+  /**
+   * 默认媒体处理器，通常为 RealtimeMediaProcessor
+   */
+  private final MediaProcessor defaultMediaProcessor;
+
+  /**
+   * 回声测试处理器
+   */
+  private final MediaProcessor echoMediaProcessor = new EchoMediaProcessor();
 
   public SipUdpServerHandler(String localIp, CallSessionManager sessionManager, RtpServerManager rtpServerManager,
       MediaProcessor mediaProcessor) {
     this.localIp = localIp;
     this.sessionManager = sessionManager;
     this.rtpServerManager = rtpServerManager;
-    this.mediaProcessor = mediaProcessor;
+    this.defaultMediaProcessor = mediaProcessor;
   }
 
   @Override
@@ -50,12 +62,6 @@ public class SipUdpServerHandler implements UdpHandler {
     try {
       Node remote = udpPacket.getRemote();
       byte[] data = udpPacket.getData();
-
-      if (!looksLikeSip(data)) {
-        log.debug("ignore non-sip packet, from={}:{}, len={}", remote.getIp(), remote.getPort(),
-            data == null ? 0 : data.length);
-        return;
-      }
 
       SipMessage msg = messageParser.parse(data);
       if (!(msg instanceof SipRequest)) {
@@ -83,19 +89,8 @@ public class SipUdpServerHandler implements UdpHandler {
       SipResponse resp = buildSimpleResponse(req, 200, "OK", null);
       send(socket, remote, resp);
     } catch (Exception e) {
-      log.error("sip udp handler error", e);
+      e.printStackTrace();
     }
-  }
-
-  private boolean looksLikeSip(byte[] data) {
-    if (data == null || data.length == 0) {
-      return false;
-    }
-    String text = new String(data, 0, Math.min(data.length, 32), StandardCharsets.US_ASCII).trim();
-    return text.startsWith("INVITE ") || text.startsWith("ACK ") || text.startsWith("BYE ")
-        || text.startsWith("REGISTER ") || text.startsWith("OPTIONS ") || text.startsWith("CANCEL ")
-        || text.startsWith("MESSAGE ") || text.startsWith("INFO ") || text.startsWith("UPDATE ")
-        || text.startsWith("SIP/2.0 ");
   }
 
   private void handleInvite(SipRequest req, Node remote, DatagramSocket socket) throws Exception {
@@ -106,8 +101,8 @@ public class SipUdpServerHandler implements UdpHandler {
 
     log.info("UDP INVITE received, callId={}, from={}, to={}, remoteSip={}:{}, rawSdp=\n{}", callId,
         req.getHeader("From"), req.getHeader("To"), remote.getIp(), remote.getPort(), rawSdp);
-    CallSession exist = sessionManager.getByCallId(callId);
 
+    CallSession exist = sessionManager.getByCallId(callId);
     if (exist != null && exist.getLast200Ok() != null) {
       sendRaw(socket, remote, exist.getLast200Ok());
       return;
@@ -150,7 +145,16 @@ public class SipUdpServerHandler implements UdpHandler {
     session.setRemoteTelephoneEventPayloadType(negotiation.getRemoteTelephoneEventPayloadType());
     session.setPtime(negotiation.getPtime());
 
-    rtpServerManager.allocateAndStart(session, mediaProcessor);
+    MediaProcessor selectedMediaProcessor = chooseMediaProcessor(req);
+    String calledNumber = resolveCalledNumber(req);
+
+    log.info("selected media processor, callId={}, calledNumber={}, processor={}",
+        callId,
+        calledNumber,
+        selectedMediaProcessor.getClass().getSimpleName());
+
+    rtpServerManager.allocateAndStart(session, selectedMediaProcessor);
+
     log.info(
         "UDP session created, callId={}, selectedCodec={}, selectedPt={}, selectedSampleRate={}, localRtpPort={}, remoteRtp={}:{}, ptime={}",
         callId, session.getSelectedCodec() != null ? session.getSelectedCodec().getCodecName() : null,
@@ -194,6 +198,49 @@ public class SipUdpServerHandler implements UdpHandler {
     }
   }
 
+  private MediaProcessor chooseMediaProcessor(SipRequest req) {
+    String calledNumber = resolveCalledNumber(req);
+    if (ECHO_TEST_EXTENSION.equals(calledNumber)) {
+      return echoMediaProcessor;
+    }
+    return defaultMediaProcessor;
+  }
+
+  private String resolveCalledNumber(SipRequest req) {
+    return extractUserFromSipHeader(req.getHeader("To"));
+  }
+
+  /**
+   * 从 SIP 头中提取 user 部分，例如：
+   * To: <sip:9196@192.168.1.10>
+   * To: sip:9196@192.168.1.10
+   * To: "test" <sip:9196@192.168.1.10>;tag=abc
+   */
+  private String extractUserFromSipHeader(String headerValue) {
+    if (headerValue == null) {
+      return null;
+    }
+
+    String value = headerValue.trim();
+
+    int sipIdx = value.toLowerCase().indexOf("sip:");
+    if (sipIdx < 0) {
+      return null;
+    }
+
+    String sub = value.substring(sipIdx + 4);
+    int atIdx = sub.indexOf('@');
+    if (atIdx < 0) {
+      int semiIdx = sub.indexOf(';');
+      int endIdx = semiIdx >= 0 ? semiIdx : sub.length();
+      String user = sub.substring(0, endIdx).trim();
+      return user.isEmpty() ? null : user;
+    }
+
+    String user = sub.substring(0, atIdx).trim();
+    return user.isEmpty() ? null : user;
+  }
+
   private void send(DatagramSocket socket, Node remote, SipResponse response) throws Exception {
     byte[] bytes = messageEncoder.encodeResponse(response);
     sendBytes(socket, remote, bytes);
@@ -232,7 +279,6 @@ public class SipUdpServerHandler implements UdpHandler {
     resp.addHeader("Content-Type", "application/sdp");
 
     String sdp = sdpAnswerBuilder.buildAnswer(localIp, session.getLocalRtpPort(), negotiation);
-    log.info("raw response sdp=\n{}", sdp);
     resp.setBody(sdp.getBytes(StandardCharsets.US_ASCII));
     return resp;
   }
